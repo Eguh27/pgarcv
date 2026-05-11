@@ -1,0 +1,31 @@
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 24px;
+  align-items: start;
+}
+
+.main {
+  min-width: 0;
+}
+
+.sidebar {
+  position: sticky;
+  top: 72px;
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: static;
+  }
+}
+
+@media (max-width: 640px) {
+  .layout {
+    gap: 16px;
+  }
+}
+
