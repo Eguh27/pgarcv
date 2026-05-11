@@ -2,14 +2,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
   "installCommand": "npm install",
-  "env": {
-    "NEXT_PUBLIC_API_URL": "@next_public_api_url"
-  },
-  "functions": {
-    "api/**": {
-      "maxDuration": 30
-    }
-  },
   "headers": [
     {
       "source": "/api/:path*",
@@ -22,3 +14,4 @@
     }
   ]
 }
+
