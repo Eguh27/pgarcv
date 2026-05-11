@@ -13,6 +13,12 @@ const nextConfig = {
         hostname: "*.ngrok-free.app",
         pathname: "/uploads/**",
       },
+      // ✅ Support Cloudinary URLs
+      {
+        protocol: "https",
+        hostname: "res.cloudinary.com",
+        pathname: "/**",
+      },
     ],
   },
   async rewrites() {

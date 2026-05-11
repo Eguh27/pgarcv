@@ -2,31 +2,42 @@ import { api } from "@/lib/api";
 import { VideoGridClient } from "@/components/video/VideoGridClient";
 import { BannerSlider } from "@/components/video/BannerSlider";
 import { AdSlot } from "@/components/ui/AdSlot";
+import type { Video, Banner } from "@/lib/api";
 
+// ✅ Jangan prerender di build time kalau backend belum siap
+export const dynamic = "force-dynamic";
 export const revalidate = 60;
 
 export default async function HomePage() {
-  const [videosRes, bannersRes] = await Promise.allSettled([
-    api.videos.list(1),
-    api.banners.list(),
-  ]);
+  let videos: Video[] = [];
+  let banners: Banner[] = [];
 
-  const videos = (() => {
-    if (videosRes.status !== "fulfilled") return [];
-    const v: unknown = videosRes.value;
-    if (Array.isArray(v)) return v;
-    if (v && typeof v === "object") {
-      const r = v as Record<string, unknown>;
-      if (Array.isArray(r.data)) return r.data;
-      if (Array.isArray(r.videos)) return r.videos;
-    }
-    return [];
-  })();
+  try {
+    const [videosRes, bannersRes] = await Promise.allSettled([
+      api.videos.list(1),
+      api.banners.list(),
+    ]);
 
-  const banners = (() => {
-    if (bannersRes.status !== "fulfilled") return [];
-    return bannersRes.value;
-  })();
+    videos = (() => {
+      if (videosRes.status !== "fulfilled") return [];
+      const v: unknown = videosRes.value;
+      if (Array.isArray(v)) return v as Video[];
+      if (v && typeof v === "object") {
+        const r = v as Record<string, unknown>;
+        if (Array.isArray(r.data)) return r.data as Video[];
+        if (Array.isArray(r.videos)) return r.videos as Video[];
+      }
+      return [];
+    })();
+
+    banners = (() => {
+      if (bannersRes.status !== "fulfilled") return [];
+      return (bannersRes.value as Banner[]) || [];
+    })();
+  } catch (err) {
+    console.error("Error loading homepage data:", err);
+    // Lanjut dengan data kosong daripada 404
+  }
 
   return (
     <div>
