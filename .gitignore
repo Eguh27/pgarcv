@@ -5,4 +5,5 @@ node_modules/
 backend/uploads/
 *.db
 *.exe
+*.md
 dist/
