@@ -4,41 +4,24 @@ const NGROK_HEADER: Record<string, string> = BASE.includes("ngrok")
   : {};
 
 function saveToken(token: string) {
-  try {
-    localStorage.setItem("admin_token", token);
-  } catch {}
+  try { localStorage.setItem("admin_token", token); } catch {}
 }
 function getToken(): string {
-  try {
-    return localStorage.getItem("admin_token") || "";
-  } catch {
-    return "";
-  }
+  try { return localStorage.getItem("admin_token") || ""; } catch { return ""; }
 }
 function clearToken() {
-  try {
-    localStorage.removeItem("admin_token");
-  } catch {}
+  try { localStorage.removeItem("admin_token"); } catch {}
 }
 
 function extractData<T>(json: unknown): T {
-  if (json === null || json === undefined) {
-    throw new Error("Response kosong");
-  }
+  if (json === null || json === undefined) throw new Error("Response kosong");
   const j = json as Record<string, unknown>;
-  // Handle { success, data } format
-  if ("success" in j && "data" in j) {
-    return j.data as T;
-  }
-  // Handle array langsung
-  if (Array.isArray(json)) {
-    return json as T;
-  }
+  if ("success" in j && "data" in j) return j.data as T;
+  if (Array.isArray(json)) return json as T;
   return json as T;
 }
 
 export interface Video {
-
   id: number;
   title: string;
   subtitle: string;
@@ -55,7 +38,6 @@ export interface Video {
   categories?: Array<{ id: number; name: string }>;
   genres?: Array<{ id: number; name: string }>;
   created_at: string;
-  // ✅ HLS processing status
   hls_status?: string;
   hls_error_msg?: string;
 }
@@ -77,7 +59,7 @@ export type VideoUpsertRequest = {
   allow_download: boolean;
   categories: string[];
   genres: string[];
-  rawPath?: string; // For HLS processing
+  rawPath?: string;
 };
 
 export interface Banner {
@@ -140,7 +122,6 @@ async function get<T>(path: string): Promise<T> {
   return extractData<T>(json);
 }
 
-
 async function post<T>(path: string, body: unknown): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -161,7 +142,6 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   if (r.success !== true) throw new Error(typeof r.message === "string" ? r.message : "Error");
   return r.data as T;
 }
-
 
 async function put<T>(path: string, body: unknown): Promise<T> {
   const token = getToken();
@@ -269,26 +249,17 @@ export const adminApi = {
     delete: (id: number) => del(`/api/admin/ads/${id}`),
   },
   upload: async (file: File): Promise<{ url: string; filename: string; thumbnail_url?: string }> => {
-    const MAX_SIZE = 500 * 1024 * 1024; // 500MB
+    const MAX_SIZE = 500 * 1024 * 1024;
     const ALLOWED_IMAGE = [".jpg", ".jpeg", ".png", ".gif"];
     const ALLOWED_VIDEO = [".mp4", ".webm", ".mov", ".avi"];
-
-    // Validasi client-side
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
     const allowed = [...ALLOWED_IMAGE, ...ALLOWED_VIDEO];
-    if (!allowed.includes(ext)) {
-      throw new Error(`Format tidak didukung: ${ext}`);
-    }
-    if (file.size > MAX_SIZE) {
-      throw new Error("File terlalu besar (maks 500MB)");
-    }
-    if (file.size === 0) {
-      throw new Error("File kosong");
-    }
+    if (!allowed.includes(ext)) throw new Error(`Format tidak didukung: ${ext}`);
+    if (file.size > MAX_SIZE) throw new Error("File terlalu besar (maks 500MB)");
+    if (file.size === 0) throw new Error("File kosong");
 
     const form = new FormData();
     form.append("file", file);
-
     const token = getToken();
     const headers: Record<string, string> = { ...NGROK_HEADER };
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -320,17 +291,10 @@ export const adminApi = {
   },
   uploadVideo: async (file: File): Promise<{ url: string; thumbnail_url: string; duration: number; raw_path: string; message: string }> => {
     const token = getToken();
-
     const form = new FormData();
     form.append("file", file);
-
-    const headers: Record<string, string> = {};
-    if (BASE.includes("ngrok")) {
-      headers["ngrok-skip-browser-warning"] = "true";
-    }
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    const headers: Record<string, string> = { ...NGROK_HEADER };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     const res = await fetch(`${BASE}/api/admin/upload/video`, {
       method: "POST",
@@ -351,11 +315,9 @@ export const adminApi = {
   processHLS: async (videoId: number, rawPath: string): Promise<{ message: string; video_id: number }> => {
     return post<{ message: string; video_id: number }>("/api/admin/upload/process-hls", { video_id: videoId, raw_path: rawPath });
   },
-  // ✅ Poll HLS status
   getHLSStatus: async (videoId: number): Promise<{ id: number; hls_status: string; hls_error: string; video_url: string; is_complete: boolean }> => {
     return get(`/api/videos/${videoId}/hls-status`);
   },
-  // ✅ Chunked upload API
   chunkedUpload: {
     initiate: async (filename: string, fileSize: number, totalChunks: number): Promise<{ upload_id: string; total_chunks: number; chunk_size: number }> => {
       return post(`/api/admin/upload/chunked/initiate`, { filename, file_size: fileSize, total_chunks: totalChunks });
@@ -365,14 +327,8 @@ export const adminApi = {
       const form = new FormData();
       form.append("chunk", chunkFile);
       form.append("chunk_index", chunkIndex.toString());
-
-      const headers: Record<string, string> = {};
-      if (BASE.includes("ngrok")) {
-        headers["ngrok-skip-browser-warning"] = "true";
-      }
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
+      const headers: Record<string, string> = { ...NGROK_HEADER };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
       const res = await fetch(`${BASE}/api/admin/upload/chunked/${uploadId}/chunk`, {
         method: "POST",
@@ -396,7 +352,6 @@ export const adminApi = {
       const token = getToken();
       const headers: Record<string, string> = { ...NGROK_HEADER };
       if (token) headers["Authorization"] = `Bearer ${token}`;
-
       const res = await fetch(`${BASE}/api/admin/upload/chunked/${uploadId}`, {
         method: "DELETE",
         credentials: "include",
@@ -408,15 +363,13 @@ export const adminApi = {
   },
 };
 
+// ✅ FIX: mediaUrl sekarang prefix dengan BASE untuk path relatif
 export function mediaUrl(path: string): string {
   if (!path) return "/placeholder.jpg";
-  // Kalau sudah absolute URL (http/https), return as-is
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  // Kalau sudah path relatif dari root (/uploads/...), return as-is
-  // next/image akan handle via remotePatterns atau local
-  if (path.startsWith("/")) return path;
-  // Fallback
-  return `/${path}`;
+  // Path relatif → prefix dengan BASE supaya gambar dari backend bisa diakses
+  if (path.startsWith("/")) return `${BASE}${path}`;
+  return `${BASE}/${path}`;
 }
 
 export function formatDuration(seconds: number): string {
@@ -430,4 +383,3 @@ export function formatViews(views: number): string {
   if (views >= 1_000) return `${(views / 1_000).toFixed(1)}Rb`;
   return views.toString();
 }
-
