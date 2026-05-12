@@ -65,7 +65,7 @@ func main() {
 	// CORS
 	r.Use(cors.New(cors.Config{
 		AllowOriginFunc: func(origin string) bool {
-			// Izinkan localhost (dev) dan semua subdomain ngrok
+			// ✅ Izinkan localhost (dev)
 			allowedOrigins := []string{
 				"http://localhost:3000",
 				"http://localhost:8080",
@@ -75,9 +75,16 @@ func main() {
 					return true
 				}
 			}
-			// Izinkan semua ngrok-free.app subdomain
-			return strings.HasSuffix(origin, ".ngrok-free.app") ||
-				strings.HasSuffix(origin, ".ngrok.io")
+			// ✅ Izinkan ngrok subdomains
+			if strings.HasSuffix(origin, ".ngrok-free.app") ||
+				strings.HasSuffix(origin, ".ngrok.io") {
+				return true
+			}
+			// ✅ Izinkan Vercel domains
+			if strings.HasSuffix(origin, ".vercel.app") {
+				return true
+			}
+			return false
 		},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders: []string{

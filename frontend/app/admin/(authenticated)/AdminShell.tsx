@@ -125,16 +125,39 @@ function SidebarContent({
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [isChecking, setIsChecking] = useState(true);
 
-  // client-only auth gate (page still protected by middleware on backend; this is UX)
+  // ✅ Proper auth check - wait untuk token di localStorage
   useEffect(() => {
     try {
       const token = localStorage.getItem("admin_token");
-      if (!token && pathname !== "/admin/login") {
+      if (token) {
+        setIsAuthed(true);
+      } else if (pathname !== "/admin/login") {
+        // Redirect ke login kalau tidak ada token
         window.location.href = "/admin/login";
+        return;
       }
-    } catch {}
+    } catch (err) {
+      console.error("Auth check error:", err);
+    }
+    setIsChecking(false);
   }, [pathname]);
+
+  // ✅ Show loading sampai auth check selesai
+  if (isChecking) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-secondary)" }}>
+        <p style={{ color: "var(--text-muted)", fontFamily: "var(--font-poppins)" }}>Memverifikasi akses...</p>
+      </div>
+    );
+  }
+
+  // ✅ Jangan render children kalau belum authed
+  if (!isAuthed && pathname !== "/admin/login") {
+    return null;
+  }
 
   const handleLogout = async () => {
     await adminApi.auth.logout();
