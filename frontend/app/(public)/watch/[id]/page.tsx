@@ -44,7 +44,13 @@ export default async function WatchPage({ params }: { params: Params }) {
       <div className={styles.main}>
         <div style={{ marginBottom: "16px" }}>
           <VideoPlayerClient
-            videoUrl={video!.video_url ? mediaUrl(video!.video_url) : ""}
+            videoUrl={
+              video!.video_url
+                ? mediaUrl(video!.video_url)
+                : video!.hls_status === "done"
+                  ? `/api/hls/${video!.id}/index.m3u8`
+                  : ""
+            }
             title={video!.title}
           />
         </div>

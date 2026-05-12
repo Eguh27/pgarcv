@@ -36,6 +36,8 @@ export default function HomePage() {
       <section style={{ marginBottom: "20px" }}>
         <BannerSlider banners={banners} />
       </section>
+
+
       <AdSlot position="top" />
       <section>
         <h2 style={{ fontFamily: "var(--font-poppins)", fontWeight: 700, fontSize: "18px", marginBottom: "12px", color: "var(--text-primary)" }}>

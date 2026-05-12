@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
+
 import Link from "next/link";
 import { Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { adminApi, formatViews, mediaUrl } from "@/lib/api";
@@ -11,11 +13,15 @@ export default function AdminVideosPage() {
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  const fetchVideos = () => {
-    setLoading(true);
-    adminApi.videos
-      .list()
-      .then((res: unknown) => {
+  // Fetch on mount (async fn defined inside effect)
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      setLoading(true);
+      try {
+        const res: unknown = await adminApi.videos.list();
+
         let data: Video[] = [];
         if (Array.isArray(res)) {
           data = res as Video[];
@@ -28,7 +34,6 @@ export default function AdminVideosPage() {
           }
         }
 
-        // Validasi setiap item adalah Video yang valid
         const valid = data.filter(
           (v): v is Video =>
             typeof v === "object" &&
@@ -36,19 +41,25 @@ export default function AdminVideosPage() {
             typeof (v as Video).id === "number"
         );
 
-        setVideos(valid);
-      })
-      .catch((err: unknown) => {
+        if (!cancelled) setVideos(valid);
+      } catch (err: unknown) {
         console.error("Fetch videos error:", err);
-        setVideos([]);
-      })
-      .finally(() => setLoading(false));
-  };
+        if (!cancelled) setVideos([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
 
-
-  useEffect(() => {
-    fetchVideos();
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+
+
+
+
 
 
   const handleDelete = async (id: number, title: string) => {

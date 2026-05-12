@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   ChevronRight, Image, LayoutDashboard, LogOut,
   Megaphone, Menu, Video, X,
@@ -58,14 +58,19 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [isAuth, setIsAuth] = useState(false);
+  const initialized = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (initialized.current) return;
+
     const token = localStorage.getItem("admin_token");
     const isLoginPage = pathname === "/admin/login";
 
     if (isLoginPage) {
       // Di halaman login — tidak perlu cek auth
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsReady(true);
+      initialized.current = true;
       return;
     }
 
@@ -78,7 +83,8 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     // Ada token — tampilkan dashboard
     setIsAuth(true);
     setIsReady(true);
-  }, []); // ← dependency kosong, hanya jalan sekali saat mount
+    initialized.current = true;
+  }, [pathname]);
 
   const handleLogout = async () => {
     await adminApi.auth.logout();
