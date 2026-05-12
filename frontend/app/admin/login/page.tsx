@@ -34,16 +34,22 @@ export default function AdminLoginPage() {
       const token = json.token || json.data?.token;
       if (!token) throw new Error("Token tidak ada di response");
 
-      localStorage.setItem("admin_token", token);
-      console.log("✅ Token saved:", token.slice(0, 20) + "...");
+      // Backend mengeluarkan admin_token sebagai cookie (httpOnly) via Set-Cookie.
+      // Jangan andalkan localStorage untuk guard, karena guard server-side membaca cookie.
+      console.log("✅ Login berhasil. Token diterima (tidak disimpan di localStorage)");
 
-      // ✅ Use Next.js router.push untuk navigate (lebih aman)
       router.push("/admin/dashboard");
-      
-      // Fallback ke hard refresh kalau router.push lambat
+
+      // Fallback hard refresh untuk kasus router navigation terlambat
       setTimeout(() => {
         window.location.href = "/admin/dashboard";
-      }, 500);
+      }, 800);
+
+      // Simpan ulang ke localStorage (opsional) untuk komponen client guard yang pakai localStorage.
+      // Cookie tetap sumber utama untuk middleware server-side.
+      try {
+        localStorage.setItem("admin_token", token);
+      } catch {}
 
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login gagal");
