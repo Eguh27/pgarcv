@@ -107,9 +107,11 @@ export function Navbar() {
           padding: 12px 16px;
           align-items: center;
           gap: 12px;
+          pointer-events: none;
         }
         .mobile-search-overlay.open {
           display: flex;
+          pointer-events: auto;
         }
         .mobile-search-overlay input {
           flex: 1;

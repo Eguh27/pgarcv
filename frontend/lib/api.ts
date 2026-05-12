@@ -365,9 +365,10 @@ export const adminApi = {
 
 // ✅ FIX: mediaUrl sekarang prefix dengan BASE untuk path relatif
 export function mediaUrl(path: string): string {
-  if (!path) return "/placeholder.jpg";
+  if (!path) return `${BASE}/uploads/placeholder.jpg`;
+  // Sudah full URL (Cloudinary atau http lain) → return as-is
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  // Path relatif → prefix dengan BASE supaya gambar dari backend bisa diakses
+  // Path relatif /uploads/ → prefix BASE (ngrok/backend)
   if (path.startsWith("/")) return `${BASE}${path}`;
   return `${BASE}/${path}`;
 }

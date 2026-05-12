@@ -17,16 +17,21 @@ export default function HomePage() {
       api.banners.list(),
     ]).then(([videosRes, bannersRes]) => {
       if (videosRes.status === "fulfilled") {
-        const v = videosRes.value as unknown;
-        if (Array.isArray(v)) setVideos(v as Video[]);
-        else if (v && typeof v === "object") {
-          const r = v as Record<string, unknown>;
-          if (Array.isArray(r.data)) setVideos(r.data as Video[]);
+        const v = videosRes.value;
+        // extractData sudah unwrap {success,data} → tinggal akses .data
+        if (Array.isArray((v as { data?: unknown }).data)) {
+          setVideos((v as { data: Video[] }).data);
+        } else if (Array.isArray(v)) {
+          setVideos(v as Video[]);
         }
       }
       if (bannersRes.status === "fulfilled") {
         const b = bannersRes.value;
-        if (Array.isArray(b)) setBanners(b as Banner[]);
+        if (Array.isArray(b)) {
+          setBanners(b as Banner[]);
+        } else if (Array.isArray((b as { data?: unknown }).data)) {
+          setBanners((b as { data: Banner[] }).data);
+        }
       }
     }).finally(() => setLoading(false));
   }, []);
