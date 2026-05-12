@@ -127,9 +127,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
-  // ✅ Simple auth gate - just wait untuk localStorage ready
+  // ✅ Simple auth gate - wait lebih lama untuk localStorage ready
   useEffect(() => {
-    // Give localStorage time to be accessible
+    // Wait 300ms untuk localStorage dan Next.js hydration selesai
     const timer = setTimeout(() => {
       const token = localStorage.getItem("admin_token");
       if (!token && pathname !== "/admin/login") {
@@ -137,7 +137,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         return;
       }
       setIsReady(true);
-    }, 100);
+    }, 300);
 
     return () => clearTimeout(timer);
   }, [pathname]);

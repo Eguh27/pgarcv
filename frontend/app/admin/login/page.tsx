@@ -1,9 +1,11 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 export default function AdminLoginPage() {
+  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -35,8 +37,13 @@ export default function AdminLoginPage() {
       localStorage.setItem("admin_token", token);
       console.log("✅ Token saved:", token.slice(0, 20) + "...");
 
-      // Hard navigate — bukan router.push
-      window.location.href = "/admin/dashboard";
+      // ✅ Use Next.js router.push untuk navigate (lebih aman)
+      router.push("/admin/dashboard");
+      
+      // Fallback ke hard refresh kalau router.push lambat
+      setTimeout(() => {
+        window.location.href = "/admin/dashboard";
+      }, 500);
 
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login gagal");
