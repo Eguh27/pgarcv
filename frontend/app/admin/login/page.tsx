@@ -1,11 +1,9 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 export default function AdminLoginPage() {
-  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -17,16 +15,12 @@ export default function AdminLoginPage() {
     try {
       const res = await fetch(`${BASE}/api/admin/login`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "ngrok-skip-browser-warning": "true",
-        },
+        headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ username, password }),
       });
 
       const json = await res.json();
-
       if (!res.ok || !json.success) {
         throw new Error(json.message || "Login gagal");
       }
@@ -34,22 +28,12 @@ export default function AdminLoginPage() {
       const token = json.token || json.data?.token;
       if (!token) throw new Error("Token tidak ada di response");
 
-      // Backend mengeluarkan admin_token sebagai cookie (httpOnly) via Set-Cookie.
-      // Jangan andalkan localStorage untuk guard, karena guard server-side membaca cookie.
-      console.log("✅ Login berhasil. Token diterima (tidak disimpan di localStorage)");
+      // ✅ Simpan token ke localStorage
+      localStorage.setItem("admin_token", token);
+      console.log("✅ Token saved:", localStorage.getItem("admin_token")?.slice(0, 20));
 
-      router.push("/admin/dashboard");
-
-      // Fallback hard refresh untuk kasus router navigation terlambat
-      setTimeout(() => {
-        window.location.href = "/admin/dashboard";
-      }, 800);
-
-      // Simpan ulang ke localStorage (opsional) untuk komponen client guard yang pakai localStorage.
-      // Cookie tetap sumber utama untuk middleware server-side.
-      try {
-        localStorage.setItem("admin_token", token);
-      } catch {}
+      // Hard navigate — bukan router.push
+      window.location.href = "/admin/dashboard";
 
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login gagal");
@@ -76,6 +60,7 @@ export default function AdminLoginPage() {
             <input
               value={username}
               onChange={(e) => { setUsername(e.target.value); setError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
               autoComplete="username"
               style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: "14px", outline: "none", fontFamily: "var(--font-montserrat)" }}
             />
@@ -86,8 +71,8 @@ export default function AdminLoginPage() {
               type="password"
               value={password}
               onChange={(e) => { setPassword(e.target.value); setError(""); }}
-              autoComplete="current-password"
               onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              autoComplete="current-password"
               style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1px solid var(--border)", background: "var(--bg-secondary)", color: "var(--text-primary)", fontSize: "14px", outline: "none", fontFamily: "var(--font-montserrat)" }}
             />
           </div>
