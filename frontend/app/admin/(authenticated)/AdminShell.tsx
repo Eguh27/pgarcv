@@ -125,39 +125,22 @@ function SidebarContent({
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isAuthed, setIsAuthed] = useState(false);
-  const [isChecking, setIsChecking] = useState(true);
+  const [isReady, setIsReady] = useState(false);
 
-  // ✅ Proper auth check - wait untuk token di localStorage
+  // ✅ Simple auth gate - just wait untuk localStorage ready
   useEffect(() => {
-    try {
+    // Give localStorage time to be accessible
+    const timer = setTimeout(() => {
       const token = localStorage.getItem("admin_token");
-      if (token) {
-        setIsAuthed(true);
-      } else if (pathname !== "/admin/login") {
-        // Redirect ke login kalau tidak ada token
+      if (!token && pathname !== "/admin/login") {
         window.location.href = "/admin/login";
         return;
       }
-    } catch (err) {
-      console.error("Auth check error:", err);
-    }
-    setIsChecking(false);
+      setIsReady(true);
+    }, 100);
+
+    return () => clearTimeout(timer);
   }, [pathname]);
-
-  // ✅ Show loading sampai auth check selesai
-  if (isChecking) {
-    return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-secondary)" }}>
-        <p style={{ color: "var(--text-muted)", fontFamily: "var(--font-poppins)" }}>Memverifikasi akses...</p>
-      </div>
-    );
-  }
-
-  // ✅ Jangan render children kalau belum authed
-  if (!isAuthed && pathname !== "/admin/login") {
-    return null;
-  }
 
   const handleLogout = async () => {
     await adminApi.auth.logout();
@@ -168,6 +151,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   };
 
   const closeSidebar = () => setSidebarOpen(false);
+
+  // ✅ Show loading sampai ready
+  if (!isReady) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg-secondary)" }}>
+        <p style={{ color: "var(--text-muted)", fontFamily: "var(--font-poppins)" }}>Memuat...</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-secondary)" }}>
