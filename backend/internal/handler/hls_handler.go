@@ -150,7 +150,9 @@ func (h *HLSHandler) ServeSegment(c *gin.Context) {
 	}
 
 	segment := c.Param("segment")
-	if filepath.Base(segment) != segment {
+	// Guard traversal: tolak dotfiles, "..", dan subpath.
+	// (filepath.Base saja tidak cukup — Base("..") == "..")
+	if segment == "" || strings.HasPrefix(segment, ".") || filepath.Base(segment) != segment {
 		response.Error(c, 400, "Invalid segment")
 		return
 	}
