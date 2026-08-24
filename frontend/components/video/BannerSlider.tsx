@@ -8,6 +8,13 @@ import { mediaUrl } from "@/lib/api";
 export function BannerSlider({ banners }: { banners: Banner[] }) {
   const [current, setCurrent] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pointerRef = useRef({
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0,
+    swiped: false,
+  });
 
   const resetTimer = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -25,6 +32,51 @@ export function BannerSlider({ banners }: { banners: Banner[] }) {
     resetTimer();
   };
 
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (banners.length <= 1 || (event.pointerType === "mouse" && event.button !== 0)) return;
+    pointerRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      swiped: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    pointerRef.current.currentX = event.clientX;
+    pointerRef.current.currentY = event.clientY;
+  };
+
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (banners.length <= 1) return;
+
+    const deltaX = pointerRef.current.currentX - pointerRef.current.startX;
+    const deltaY = pointerRef.current.currentY - pointerRef.current.startY;
+    const isHorizontalSwipe = Math.abs(deltaX) > 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2;
+
+    if (isHorizontalSwipe) {
+      pointerRef.current.swiped = true;
+      event.preventDefault();
+      event.stopPropagation();
+      go(deltaX < 0 ? 1 : -1);
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const handleClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!pointerRef.current.swiped) return;
+    event.preventDefault();
+    event.stopPropagation();
+    window.setTimeout(() => {
+      pointerRef.current.swiped = false;
+    }, 0);
+  };
+
   if (!banners.length) return (
     <div style={{ height: "240px", borderRadius: "16px", background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <p style={{ color: "var(--text-muted)" }}>Belum ada banner aktif</p>
@@ -32,29 +84,58 @@ export function BannerSlider({ banners }: { banners: Banner[] }) {
   );
 
   return (
-    <div style={{ position: "relative", borderRadius: "16px", overflow: "hidden", aspectRatio: "16/5", background: "var(--surface)" }}>
+    <div
+      onPointerDownCapture={handlePointerDown}
+      onPointerMoveCapture={handlePointerMove}
+      onPointerUpCapture={handlePointerUp}
+      onPointerCancelCapture={handlePointerUp}
+      onClickCapture={handleClickCapture}
+      style={{
+        position: "relative",
+        borderRadius: "16px",
+        overflow: "hidden",
+        aspectRatio: "16/5",
+        background: "var(--surface)",
+        touchAction: "pan-y",
+      }}
+    >
       {/* Slides */}
-      {banners.map((b, i) => (
-        <a key={b.id} href={b.link_url || "#"} target="_blank" rel="noopener noreferrer"
-          style={{
-            position: "absolute", inset: 0,
-            opacity: i === current ? 1 : 0,
-            transition: "opacity 0.6s ease",
-            pointerEvents: i === current ? "auto" : "none",
-          }}
-        >
-          <Image src={mediaUrl(b.image_url)} alt={b.title} fill style={{ objectFit: "cover" }} priority={i === 0} />
-          {b.title && (
-            <div style={{
-              position: "absolute", bottom: 0, left: 0, right: 0,
-              background: "linear-gradient(transparent, rgba(0,0,0,0.6))",
-              padding: "32px 24px 16px",
-            }}>
-              <p style={{ color: "#fff", fontFamily: "var(--font-poppins)", fontWeight: 600, fontSize: "18px" }}>{b.title}</p>
-            </div>
-          )}
-        </a>
-      ))}
+      <div
+        style={{
+          display: "flex",
+          height: "100%",
+          transform: `translateX(-${current * 100}%)`,
+          transition: "transform 0.45s ease",
+        }}
+      >
+        {banners.map((b, i) => (
+          <a
+            key={b.id}
+            href={b.link_url || "#"}
+            target="_blank"
+            rel="noopener noreferrer"
+            draggable={false}
+            style={{
+              position: "relative",
+              flex: "0 0 100%",
+              height: "100%",
+              display: "block",
+              userSelect: "none",
+            }}
+          >
+            <Image src={mediaUrl(b.image_url)} alt={b.title} fill style={{ objectFit: "cover" }} priority={i === 0} draggable={false} />
+            {b.title && (
+              <div style={{
+                position: "absolute", bottom: 0, left: 0, right: 0,
+                background: "linear-gradient(transparent, rgba(0,0,0,0.6))",
+                padding: "32px 24px 16px",
+              }}>
+                <p style={{ color: "#fff", fontFamily: "var(--font-poppins)", fontWeight: 600, fontSize: "18px" }}>{b.title}</p>
+              </div>
+            )}
+          </a>
+        ))}
+      </div>
 
       {/* Arrows */}
       {banners.length > 1 && (

@@ -4,15 +4,17 @@ import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
+  const isDark = resolvedTheme === "dark";
+
   return (
     <button
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+      onClick={() => setTheme(isDark ? "light" : "dark")}
       style={{
         background: "var(--surface)",
         border: "1px solid var(--border)",
@@ -27,7 +29,7 @@ export function ThemeToggle() {
       }}
       aria-label="Toggle theme"
     >
-      {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      {isDark ? <Sun size={18} /> : <Moon size={18} />}
     </button>
   );
 }

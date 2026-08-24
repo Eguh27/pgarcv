@@ -1,9 +1,44 @@
+# Dependencies
 node_modules/
+
+# Build output
 .next/
+dist/
+*.exe
+
+# Environment & secrets
 .env
 .env.local
-backend/uploads/
+.env*.local
+backend/.env.ex
+
+# Database
 *.db
-*.exe
+
+# Runtime data (uploads, HLS segments, encryption keys, chunk temp)
+backend/uploads/
+backend/hls_output/
+backend/backend/
+backend/.chunks/
+videos.json
+
+# Logs
+*.log
+
+# Docs stay local (belum direview untuk publish)
 *.md
-dist/
+
+# Runtime debris dari menjalankan server di dalam cmd/
+backend/cmd/uploads/
+
+# OS / IDE / deploy tools
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.vercel/
+.wrangler/
+
+# Go binaries (tanpa ekstensi)
+backend/server
+backend/videoplatform

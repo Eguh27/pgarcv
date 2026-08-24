@@ -62,29 +62,22 @@ func main() {
 	r := gin.Default()
 	r.MaxMultipartMemory = 64 << 20
 
-	// CORS
+	// CORS — whitelist eksplisit via CORS_ORIGIN (pisahkan dengan koma).
+	// Contoh: CORS_ORIGIN=http://localhost:3000,https://pgarcv.vercel.app
+	allowedOrigins := make(map[string]bool)
+	for _, o := range strings.Split(cfg.CORSOrigin, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins[o] = true
+		}
+	}
+	if cfg.Env != "production" {
+		allowedOrigins["http://localhost:3000"] = true
+		allowedOrigins["http://localhost:8080"] = true
+	}
+
 	r.Use(cors.New(cors.Config{
 		AllowOriginFunc: func(origin string) bool {
-			// ✅ Izinkan localhost (dev)
-			allowedOrigins := []string{
-				"http://localhost:3000",
-				"http://localhost:8080",
-			}
-			for _, allowed := range allowedOrigins {
-				if origin == allowed {
-					return true
-				}
-			}
-			// ✅ Izinkan ngrok subdomains
-			if strings.HasSuffix(origin, ".ngrok-free.app") ||
-				strings.HasSuffix(origin, ".ngrok.io") {
-				return true
-			}
-			// ✅ Izinkan Vercel domains
-			if strings.HasSuffix(origin, ".vercel.app") {
-				return true
-			}
-			return false
+			return allowedOrigins[origin]
 		},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
 		AllowHeaders: []string{
