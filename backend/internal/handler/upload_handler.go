@@ -128,7 +128,7 @@ func allowedUploadKind(ext string) (string, bool) {
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".gif":
 		return "image", true
-	case ".mp4", ".webm", ".mov":
+	case ".mp4", ".webm", ".mov", ".avi":
 		return "video", true
 	default:
 		return "", false

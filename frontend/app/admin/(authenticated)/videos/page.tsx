@@ -1,73 +1,46 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-
 import Link from "next/link";
+import { useState } from "react";
+import useSWR from "swr";
 import { Eye, Pencil, Plus, Trash2 } from "lucide-react";
 import { adminApi, formatViews, mediaUrl } from "@/lib/api";
 import type { Video } from "@/lib/api";
 
+function normalizeVideoList(res: unknown): Video[] {
+  let data: unknown[] = [];
+  if (Array.isArray(res)) {
+    data = res;
+  } else if (res !== null && typeof res === "object") {
+    const r = res as Record<string, unknown>;
+    if (Array.isArray(r.data)) data = r.data;
+    else if (Array.isArray(r.videos)) data = r.videos;
+  }
+  return data.filter(
+    (v): v is Video =>
+      typeof v === "object" &&
+      v !== null &&
+      typeof (v as Video).id === "number"
+  );
+}
+
+const fetcher = async (): Promise<Video[]> =>
+  normalizeVideoList(await adminApi.videos.list());
+
 export default function AdminVideosPage() {
-  const [videos, setVideos] = useState<Video[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { data: videos = [], isLoading, error, mutate } = useSWR<Video[]>(
+    "admin/videos",
+    fetcher,
+    { revalidateOnFocus: false }
+  );
   const [deletingId, setDeletingId] = useState<number | null>(null);
-
-  // Fetch on mount (async fn defined inside effect)
-  useEffect(() => {
-    let cancelled = false;
-
-    const run = async () => {
-      setLoading(true);
-      try {
-        const res: unknown = await adminApi.videos.list();
-
-        let data: Video[] = [];
-        if (Array.isArray(res)) {
-          data = res as Video[];
-        } else if (res !== null && typeof res === "object") {
-          const r = res as Record<string, unknown>;
-          if (Array.isArray(r.data)) {
-            data = r.data as Video[];
-          } else if (Array.isArray(r.videos)) {
-            data = r.videos as Video[];
-          }
-        }
-
-        const valid = data.filter(
-          (v): v is Video =>
-            typeof v === "object" &&
-            v !== null &&
-            typeof (v as Video).id === "number"
-        );
-
-        if (!cancelled) setVideos(valid);
-      } catch (err: unknown) {
-        console.error("Fetch videos error:", err);
-        if (!cancelled) setVideos([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-
-
-
-
-
 
   const handleDelete = async (id: number, title: string) => {
     if (!confirm(`Hapus video "${title}"?`)) return;
     setDeletingId(id);
     try {
       await adminApi.videos.delete(id);
-      setVideos((prev) => prev.filter((v) => v.id !== id));
+      await mutate();
     } catch {
       alert("Gagal hapus video");
     } finally {
@@ -102,6 +75,12 @@ export default function AdminVideosPage() {
         </Link>
       </div>
 
+      {error && (
+        <p style={{ marginBottom: "12px", fontSize: "13px", color: "#dc2626" }}>
+          Gagal memuat video. Coba refresh halaman.
+        </p>
+      )}
+
       <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "14px", overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -115,7 +94,7 @@ export default function AdminVideosPage() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {isLoading ? (
                 <tr>
                   <td colSpan={6} style={{ padding: "32px", textAlign: "center", color: "var(--text-muted)" }}>
                     Memuat...
@@ -174,7 +153,7 @@ export default function AdminVideosPage() {
                   </tr>
                 ))
               )}
-              {!loading && videos.length === 0 && (
+              {!isLoading && videos.length === 0 && (
                 <tr>
                   <td colSpan={6} style={{ padding: "48px", textAlign: "center", color: "var(--text-muted)" }}>
                     Belum ada video. <Link href="/admin/videos/new" style={{ color: "var(--accent)" }}>Tambah sekarang</Link>
