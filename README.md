@@ -12,6 +12,7 @@ Dokumentasi lengkap:
 |---|---|
 | [docs/API.md](docs/API.md) | Referensi seluruh endpoint (publik + admin), auth, contoh request |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Environment variable, database, storage, CORS, HLS |
+| [docs/DOCKER.md](docs/DOCKER.md) | Menjalankan stack dengan Docker Compose |
 
 ---
 
@@ -52,6 +53,15 @@ Frontend berjalan di `http://localhost:3000`, dan rewrite `/api/*` serta
 
 Buka `http://localhost:3000/admin/login`.
 Default dev: **admin / admin** (lihat `backend/.env`).
+
+### Alternatif: Docker
+
+```bash
+cp .env.docker.example .env.docker   # isi JWT_SECRET & ADMIN_PASSWORD
+docker compose --env-file .env.docker up -d --build
+```
+
+Detailnya di [docs/DOCKER.md](docs/DOCKER.md).
 
 ### Akses dari perangkat lain di jaringan lokal
 

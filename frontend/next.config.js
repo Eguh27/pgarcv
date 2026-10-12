@@ -39,14 +39,25 @@ const nextConfig = {
     ],
   },
   async rewrites() {
+    // PENTING: rewrites dievaluasi saat BUILD dan hasilnya di-freeze ke
+    // routes-manifest.json. Env var yang disetel saat runtime TIDAK terbaca
+    // di sini — karena itu API_URL harus di-declare sebagai ARG build.
+    //
+    // API_URL (tanpa NEXT_PUBLIC_) sengaja dipakai supaya nilainya tidak
+    // ikut ter-inline ke bundle browser: value ini hanya untuk sisi server.
+    const API_URL =
+      process.env.API_URL ||
+      process.env.NEXT_PUBLIC_API_URL ||
+      "http://localhost:8080";
+
     return [
       {
         source: "/api/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/api/:path*`,
+        destination: `${API_URL}/api/:path*`,
       },
       {
         source: "/uploads/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"}/uploads/:path*`,
+        destination: `${API_URL}/uploads/:path*`,
       },
     ];
   },

@@ -1,0 +1,18 @@
+# Buang berkas yang tidak dibutuhkan di dalam image layer.
+.git
+.gitignore
+*.md
+.env
+.env.*
+!.env.example
+uploads/
+hls_output/
+*.db
+*.db-journal
+videoplatform
+server
+server.exe
+*.exe
+*.log
+Dockerfile
+.dockerignore

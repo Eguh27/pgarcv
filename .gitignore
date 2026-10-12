@@ -11,6 +11,8 @@ dist/
 .env.local
 .env*.local
 backend/.env.ex
+# Secret untuk docker compose (JWT_SECRET, ADMIN_PASSWORD, dll)
+.env.docker
 
 # Database
 *.db

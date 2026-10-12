@@ -1,15 +1,38 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// BASE punya dua bentuk karena dipakai di dua runtime berbeda:
+//
+//   Browser  → path relatif ("/api/...") supaya request melewati rewrite
+//              Next.js dan diproxy ke backend. Browser tidak boleh
+//              tahu alamat internal container.
+//   Server   → URL absolut ke backend. Path relatif tidak punya origin
+//              untuk di-resolve, jadi fetch akan gagal saat SSR.
+//
+// API_URL hanya dibaca di server (tidak di-inline ke bundle browser),
+// sedangkan NEXT_PUBLIC_API_URL di-inline saat build dan dipakai browser.
+const isServer = typeof window === "undefined";
+const BASE = isServer
+  ? process.env.API_URL || "http://localhost:8080"
+  : process.env.NEXT_PUBLIC_API_URL || "";
+
 const NGROK_HEADER: Record<string, string> = BASE.includes("ngrok")
   ? { "ngrok-skip-browser-warning": "true" }
   : {};
 
+// Akses storage hanya aman di browser. Menacunya di server membuat Node
+// memancarkan ExperimentalWarning ("localStorage is not available") saat
+// modul ini dipanggil dari Server Component — try/catch tidak bisa menekan
+// peringatan itu karena pemicunya pembacaan identifier-nya, bukan pemanggilannya.
+const isBrowser = () => typeof window !== "undefined";
+
 function saveToken(token: string) {
+  if (!isBrowser()) return;
   try { localStorage.setItem("admin_token", token); } catch {}
 }
 function getToken(): string {
+  if (!isBrowser()) return "";
   try { return localStorage.getItem("admin_token") || ""; } catch { return ""; }
 }
 function clearToken() {
+  if (!isBrowser()) return;
   try { localStorage.removeItem("admin_token"); } catch {}
 }
 
@@ -363,14 +386,20 @@ export const adminApi = {
   },
 };
 
-// ✅ FIX: mediaUrl sekarang prefix dengan BASE untuk path relatif
+// mediaUrl mengembalikan URL yang aman dipakai di <img> dan next/image.
+//
+// Sengaja TIDAK memakai BASE di sini. Nilai media selalu dirender ke
+// markup (dan srcset) yang dibaca browser, sedangkan BASE untuk server
+// bisa berupa hostname internal container ("http://backend:8080") yang
+// tidak bisa di-resolve oleh browser. Path relatif "/uploads/..." lebih
+// aman: request-nya lewat rewrite Next.js, sama seperti request API.
+//
+// URL absolut (mis. Cloudinary) tetap dipakai apa adanya.
 export function mediaUrl(path: string): string {
-  if (!path) return `${BASE}/uploads/placeholder.jpg`;
-  // Sudah full URL (Cloudinary atau http lain) → return as-is
+  if (!path) return "/uploads/placeholder.jpg";
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  // Path relatif /uploads/ → prefix BASE (ngrok/backend)
-  if (path.startsWith("/")) return `${BASE}${path}`;
-  return `${BASE}/${path}`;
+  if (path.startsWith("/")) return path;
+  return `/${path}`;
 }
 
 export function formatDuration(seconds: number): string {

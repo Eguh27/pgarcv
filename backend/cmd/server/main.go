@@ -49,7 +49,7 @@ func run() error {
 		return err
 	}
 
-	if err := repository.Seed(db); err != nil {
+	if err := repository.Seed(db, cfg.UploadPath); err != nil {
 		// Seed gagal tidak mematikan server: database mungkin sudah berisi data
 		// dari lingkungan sebelumnya.
 		log.Printf("⚠️  Seed data dilewati: %v", err)

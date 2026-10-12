@@ -1,0 +1,88 @@
+# Stack produksi lokal: frontend Next.js + backend Go.
+#
+#   cp .env.docker.example .env.docker   # lalu isi secrets-nya
+#   docker compose up -d --build
+#   frontend → http://localhost:3000
+#
+# Secrets dibaca dari .env.docker (--env-file), bukan .env milik backend.
+#
+# Alur request browser:
+#   Browser → :3000/api/... → rewrite Next.js → http://backend:8080/api/...
+# Browser TIDAK pernah bicara langsung ke backend, jadi CORS tidak
+# jadi hambatan untuk request yang originate dari halaman.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pgarcv-backend
+    restart: unless-stopped
+    environment:
+      ENV: production
+      PORT: "8080"
+
+      # Kosongkan untuk SQLite. Isi untuk PostgreSQL (production).
+      DATABASE_URL: ""
+
+      DB_PATH: /var/lib/pgarcv/videoplatform.db
+      UPLOAD_PATH: /var/uploads
+      HLS_OUTPUT_PATH: /var/hls_output
+
+      # WAJIB diganti sebelum dipakai di server publik.
+      # Generate: openssl rand -hex 32  (JWT_SECRET)
+      #           openssl rand -hex 16  (HLS_ENCRYPT_KEY)
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET wajib diisi - lihat .env.example}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD wajib diisi}
+      HLS_ENCRYPT_KEY: ${HLS_ENCRYPT_KEY:-}
+
+      SERVER_URL: ${SERVER_URL:-http://localhost:3000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      CLOUDINARY_URL: ${CLOUDINARY_URL:-}
+    volumes:
+      # Upload + HLS harus persisten, kalau tidak hilang tiap restart.
+      # Database diletakkan di volume terpisah supaya tidak ikut hilang
+      # saat folder upload dibersihkan.
+      - db:/var/lib/pgarcv
+      - uploads:/var/uploads
+      - hls:/var/hls_output
+    ports:
+      # Di-bind ke loopback saja supaya backend tidak terekspos ke LAN.
+      # Akses dari perangkat lain lewat proxy frontend di :3000.
+      - "127.0.0.1:8080:8080"
+    networks:
+      - pgarcv
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # rewrites dievaluasi saat build (lihat catatan di next.config.js),
+        # jadi backend URL harus diberikan sebagai build arg, bukan runtime env.
+        API_URL: http://backend:8080
+    container_name: pgarcv-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Dibaca lib/api.ts saat SSR untuk fetch ke backend. Berbeda dengan
+      # build arg: yang ini dibutuhkan proses `next start` yang sedang jalan.
+      API_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    networks:
+      - pgarcv
+
+volumes:
+  db:
+  uploads:
+  hls:
+
+networks:
+  pgarcv:
+    driver: bridge

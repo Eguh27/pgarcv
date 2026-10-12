@@ -9,8 +9,12 @@ afterEach(() => {
 });
 
 describe("mediaUrl", () => {
-  it("path kosong → placeholder", () => {
-    expect(mediaUrl("")).toBe(`${BASE}/uploads/placeholder.jpg`);
+  // mediaUrl sengaja selalu mengembalikan path relatif, bukan URL absolut.
+  // Nilainya dipakai di srcset <img>/next/image yang dibaca browser, sementara
+  // BASE untuk server bisa berupa hostname internal container yang tidak bisa
+  // di-resolve browser. Path relatif lewat rewrite Next.js.
+  it("path kosong → placeholder relatif", () => {
+    expect(mediaUrl("")).toBe("/uploads/placeholder.jpg");
   });
 
   it("URL absolut (Cloudinary) tidak diubah", () => {
@@ -18,12 +22,18 @@ describe("mediaUrl", () => {
     expect(mediaUrl(url)).toBe(url);
   });
 
-  it("path relatif /uploads diprefix BASE", () => {
-    expect(mediaUrl("/uploads/a.jpg")).toBe(`${BASE}/uploads/a.jpg`);
+  it("path relatif /uploads dikeembalikan apa adanya", () => {
+    expect(mediaUrl("/uploads/a.jpg")).toBe("/uploads/a.jpg");
   });
 
-  it("path tanpa leading slash tetap jadi URL valid", () => {
-    expect(mediaUrl("hls/video_1/index.m3u8")).toBe(`${BASE}/hls/video_1/index.m3u8`);
+  it("path tanpa leading slash mendapat leading slash", () => {
+    expect(mediaUrl("hls/video_1/index.m3u8")).toBe("/hls/video_1/index.m3u8");
+  });
+
+  it("tidak pernah mengembalikan hostname internal container", () => {
+    const out = mediaUrl("/uploads/a.jpg");
+    expect(out).not.toContain("backend:8080");
+    expect(out).not.toContain("localhost:8080");
   });
 });
 
@@ -57,8 +67,11 @@ describe("api.videos.list", () => {
       )
     );
     const data = await api.videos.list();
-    expect(Array.isArray(data)).toBe(true);
-    expect(data[0].title).toBe("A");
+    // Server membalas {success,data:[...]} sehingga extractData mengembalikan
+    // array-nya langsung, bukan objek PaginatedResponse.
+    const list = Array.isArray(data) ? data : (data as unknown as { data: Array<{ title: string }> }).data;
+    expect(Array.isArray(list)).toBe(true);
+    expect(list[0].title).toBe("A");
     expect(fetch).toHaveBeenCalledWith(
       `${BASE}/api/videos?page=1&search=`,
       expect.objectContaining({ credentials: "include" })
