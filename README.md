@@ -13,6 +13,10 @@ Dokumentasi lengkap:
 | [docs/API.md](docs/API.md) | Referensi seluruh endpoint (publik + admin), auth, contoh request |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Environment variable, database, storage, CORS, HLS |
 | [docs/DOCKER.md](docs/DOCKER.md) | Menjalankan stack dengan Docker Compose |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | Opsi deploy ke server + batas free tier tiap platform |
+
+> **Status saat ini: lokal.** Untuk langkah deploy ke server sungguhan, lihat
+> [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ---
 
@@ -62,6 +66,28 @@ docker compose --env-file .env.docker up -d --build
 ```
 
 Detailnya di [docs/DOCKER.md](docs/DOCKER.md).
+
+### Dua cara menjalankan — jangan bersamaan
+
+| | Docker | Dev mode |
+|---|---|---|
+| Hot reload | Rebuild image tiap ubah kode | Langsung reload |
+| Login admin | Password dari `.env.docker` | `admin` / `admin` |
+| Database | Named volume `db` | `backend/videoplatform.db` |
+
+Keduanya memakai port yang sama (`:3000` frontend, `:8080` backend), jadi
+hanya boleh jalan satu pada satu waktu:
+
+```bash
+# pindah ke dev mode
+docker compose --env-file .env.docker down
+cd backend && go run cmd/server/main.go
+cd frontend && npm run dev
+```
+
+> ⚠️ **Keduanya tidak berbagi data.** Video yang diupload lewat Docker tidak akan
+> muncul di dev mode, dan sebaliknya — karena masing-masing memakai database dan
+> folder storage yang terpisah.
 
 ### Akses dari perangkat lain di jaringan lokal
 
