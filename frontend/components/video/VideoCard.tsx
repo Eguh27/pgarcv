@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState, useEffect, useCallback } from "react";
 import Image from "next/image";
-import { Eye, Clock } from "lucide-react";
+import { Eye, Clock, Film } from "lucide-react";
 import type { Video } from "@/lib/api";
 import { mediaUrl, formatDuration, formatViews } from "@/lib/api";
 
@@ -18,6 +18,7 @@ export function VideoCard({ video, onClick }: Props) {
   const [isHovered, setIsHovered] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,7 +174,30 @@ export function VideoCard({ video, onClick }: Props) {
               transition: "opacity 0.3s",
             }}
             onLoad={() => setImgLoaded(true)}
+            onError={() => setImgFailed(true)}
           />
+
+          {/* Fallback saat gambar gagal dimuat — tanpa ini kartu tampil kosong
+              selamanya karena opacityControlled oleh state imgLoaded. */}
+          {imgFailed && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                background: "var(--surface)",
+                color: "var(--text-muted)",
+                fontSize: "12px",
+              }}
+            >
+              <Film size={22} />
+              <span>Gambar tidak tersedia</span>
+            </div>
+          )}
 
           {video.preview_url && (
             <video
