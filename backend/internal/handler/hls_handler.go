@@ -9,13 +9,15 @@ import (
 	"strconv"
 	"strings"
 
-	"pgarcv/internal/repository"
-	"pgarcv/pkg/response"
+	"pgarcv/internal/middleware"
+	"pgarcv/internal/model"
+	"pgarcv/internal/response"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
+// HLSHandler menyajikan playlist, segmen, dan kunci enkripsi HLS.
 type HLSHandler struct {
 	db         *gorm.DB
 	outputBase string
@@ -23,145 +25,140 @@ type HLSHandler struct {
 	serverURL  string
 }
 
+// NewHLSHandler membuat HLSHandler.
 func NewHLSHandler(db *gorm.DB, outputBase, encryptKey, serverURL string) *HLSHandler {
 	return &HLSHandler{db: db, outputBase: outputBase, encryptKey: encryptKey, serverURL: serverURL}
 }
 
-// canAccessVideo checks if user can access a video
-// - Published videos: anyone can access
-// - Unpublished videos: only authenticated admins
-func (h *HLSHandler) canAccessVideo(videoID uint) (video *repository.Video, err error, forbidden bool) {
-	v := &repository.Video{}
-	if err := h.db.First(v, videoID).Error; err != nil {
-		return nil, err, false
-	}
-	return v, nil, false
+// videoDir adalah direktori output HLS untuk satu video.
+func (h *HLSHandler) videoDir(videoID uint) string {
+	return filepath.Join(h.outputBase, "hls", fmt.Sprintf("video_%d", videoID))
 }
 
-func (h *HLSHandler) canAccessVideoForUser(c *gin.Context, videoID uint) (*repository.Video, bool) {
-	video := &repository.Video{}
-	if err := h.db.First(video, videoID).Error; err != nil {
-		// Video not found
+// canAccessVideo memutuskan apakah request diizinkan mengakses HLS sebuah video.
+//
+// Aturannya: video published boleh diakses siapa pun; video draft hanya boleh
+// diakses admin yang terautentikasi (ditandai middleware.OptionalAuth lewat
+// ContextIsAdmin). Video tidak ada menghasilkan video == nil.
+func (h *HLSHandler) canAccessVideo(c *gin.Context, videoID uint) (*model.Video, bool) {
+	var video model.Video
+	if err := h.db.First(&video, videoID).Error; err != nil {
 		return nil, false
 	}
 
-	// Published videos: anyone can access
 	if video.IsPublished {
-		return video, true
+		return &video, true
 	}
 
-	// Unpublished videos: only authenticated users (admins) can access
-	if auth, exists := c.Get("authenticated"); exists && auth.(bool) {
-		return video, true
+	if isAdmin, ok := c.Get(middleware.ContextIsAdmin); ok && isAdmin == true {
+		return &video, true
 	}
-
-	// Unpublished and not authenticated
-	return video, false
+	return &video, false
 }
 
-func (h *HLSHandler) ServeKey(c *gin.Context) {
-	// Validasi referer — hanya izinkan dari domain sendiri
-	referer := c.GetHeader("Referer")
-	origin := c.GetHeader("Origin")
-
-	allowed := false
-	for _, check := range []string{referer, origin} {
-		if check != "" && (strings.HasPrefix(check, h.serverURL) ||
-			strings.HasPrefix(check, "http://localhost")) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		c.Status(403)
-		return
-	}
-
+// authorize mengambil video dan menolak request yang tidak berhak.
+//
+// Menyatukan pengecekan "video ada" dan "video boleh diakses" supaya tiap
+// endpoint tidak mengulang logikanya.
+func (h *HLSHandler) authorize(c *gin.Context) (*model.Video, bool) {
 	videoID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
-		response.Error(c, 400, "ID tidak valid")
+		response.Error(c, http.StatusBadRequest, "ID tidak valid")
+		return nil, false
+	}
+
+	video, allowed := h.canAccessVideo(c, uint(videoID))
+	if video == nil {
+		response.Error(c, http.StatusNotFound, "Video tidak ditemukan")
+		return nil, false
+	}
+	if !allowed {
+		response.Error(c, http.StatusForbidden, "Video tidak tersedia")
+		return nil, false
+	}
+	return video, true
+}
+
+// allowedOrigin melapor apakah referer atau origin request berasal dari server
+// sendiri atau dari localhost.
+func (h *HLSHandler) allowedOrigin(referer, origin string) bool {
+	for _, candidate := range []string{referer, origin} {
+		if candidate == "" {
+			continue
+		}
+		if strings.HasPrefix(candidate, h.serverURL) || strings.HasPrefix(candidate, "http://localhost") {
+			return true
+		}
+	}
+	return false
+}
+
+// ServeKey menyajikan kunci AES-128 untuk decryption HLS.
+//
+// Kunci hanya diberikan pada request yang dianggap berasal dari pemutar di
+// origin sendiri, supaya URL kunci tidak bisa dipakai di situs pihak ketiga.
+func (h *HLSHandler) ServeKey(c *gin.Context) {
+	if !h.allowedOrigin(c.GetHeader("Referer"), c.GetHeader("Origin")) {
+		c.Status(http.StatusForbidden)
 		return
 	}
-	var video repository.Video
-	if err := h.db.First(&video, videoID).Error; err != nil {
-		response.Error(c, 404, "Video tidak ditemukan")
+
+	if _, ok := h.authorize(c); !ok {
 		return
 	}
-	if !video.IsPublished {
-		response.Error(c, 403, "Video tidak tersedia")
-		return
-	}
+
 	keyBytes, err := hex.DecodeString(h.encryptKey)
-	if err != nil {
-		response.Error(c, 500, "Key error")
+	if err != nil || len(keyBytes) != 16 {
+		response.Error(c, http.StatusInternalServerError, "Kunci enkripsi tidak valid")
 		return
 	}
-	c.Header("Content-Type", "application/octet-stream")
+
 	c.Header("Cache-Control", "no-store")
 	c.Data(http.StatusOK, "application/octet-stream", keyBytes)
 }
 
+// ServeM3U8 menyajikan playlist HLS.
 func (h *HLSHandler) ServeM3U8(c *gin.Context) {
-	videoID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, 400, "ID tidak valid")
+	video, ok := h.authorize(c)
+	if !ok {
 		return
 	}
 
-	// ✅ Check authorization: published OR authenticated
-	video, allowed := h.canAccessVideoForUser(c, uint(videoID))
-	if video == nil {
-		response.Error(c, 404, "Video tidak ditemukan")
-		return
-	}
-	if !allowed {
-		response.Error(c, 403, "Video tidak tersedia")
+	videoID := video.ID
+	m3u8Path := filepath.Join(h.videoDir(videoID), "index.m3u8")
+	if _, err := os.Stat(m3u8Path); err != nil {
+		response.Error(c, http.StatusNotFound, "HLS tidak tersedia")
 		return
 	}
 
-	// ✅ Only then serve M3U8
-	m3u8Path := filepath.Join(h.outputBase, "hls",
-		fmt.Sprintf("video_%d", videoID), "index.m3u8")
-	if _, err := os.Stat(m3u8Path); os.IsNotExist(err) {
-		response.Error(c, 404, "HLS tidak tersedia")
-		return
-	}
+	// http.ServeFile hanya menetapkan Content-Type bila belum ada, jadi header
+	// eksplisit di sini memang yang dipakai klien.
 	c.Header("Content-Type", "application/vnd.apple.mpegurl")
 	c.Header("Cache-Control", "no-cache")
 	c.File(m3u8Path)
 }
 
+// ServeSegment menyajikan satu segmen HLS.
 func (h *HLSHandler) ServeSegment(c *gin.Context) {
-	videoID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-	if err != nil {
-		response.Error(c, 400, "ID tidak valid")
-		return
-	}
-
-	// ✅ Check authorization: published OR authenticated
-	video, allowed := h.canAccessVideoForUser(c, uint(videoID))
-	if video == nil {
-		response.Error(c, 404, "Video tidak ditemukan")
-		return
-	}
-	if !allowed {
-		response.Error(c, 403, "Video tidak tersedia")
+	video, ok := h.authorize(c)
+	if !ok {
 		return
 	}
 
 	segment := c.Param("segment")
-	// Guard traversal: tolak dotfiles, "..", dan subpath.
-	// (filepath.Base saja tidak cukup — Base("..") == "..")
+	// Guard traversal: tolak nama kosong, path relatif, dan apa pun yang bukan
+	// nama file dasar. filepath.Base saja tidak cukup karena Base("..") == "..".
 	if segment == "" || strings.HasPrefix(segment, ".") || filepath.Base(segment) != segment {
-		response.Error(c, 400, "Invalid segment")
+		response.Error(c, http.StatusBadRequest, "Segment tidak valid")
 		return
 	}
-	segPath := filepath.Join(h.outputBase, "hls",
-		fmt.Sprintf("video_%d", videoID), segment)
-	if _, err := os.Stat(segPath); os.IsNotExist(err) {
-		response.Error(c, 404, "Segment tidak ditemukan")
+
+	segPath := filepath.Join(h.videoDir(video.ID), segment)
+	if _, err := os.Stat(segPath); err != nil {
+		response.Error(c, http.StatusNotFound, "Segment tidak ditemukan")
 		return
 	}
+
 	c.Header("Content-Type", "video/MP2T")
 	c.File(segPath)
 }

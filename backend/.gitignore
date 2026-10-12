@@ -1,0 +1,29 @@
+# Binary hasil build Go (backend/videoplatform, backend/server)
+# Pola di root sudah menutup *.exe; pola ini untuk binary tanpa ekstensi.
+videoplatform
+server
+pggarcv
+*.exe
+
+# Database runtime (SQLite). Backup yang memang sengaja disimpan harus
+# diletakkan di luar repo atau di-force dengan `git add -f`.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Environment. Hanya .env.example yang boleh ikut ter-commit.
+.env
+.env.local
+.env.*.local
+.env.ex
+
+# Runtime data: unggahan pengguna, segmen HLS, kunci enkripsi, chunk sementara.
+uploads/
+hls_output/
+.chunks/
+
+# Log dan coverage
+*.log
+*.out
+coverage.txt

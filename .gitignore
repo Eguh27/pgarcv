@@ -16,20 +16,25 @@ backend/.env.ex
 *.db
 
 # Runtime data (uploads, HLS segments, encryption keys, chunk temp)
+# Pola detail untuk backend ada di backend/.gitignore
 backend/uploads/
 backend/hls_output/
-backend/backend/
 backend/.chunks/
 videos.json
 
 # Logs
 *.log
 
-# Docs stay local (belum direview untuk publish)
+# Catatan/berkas kerja lokal yang tidak perlu ikut repo.
+# Dokumentasi resmi (README.md dan docs/) tetap di-commit lewat pengecualian
+# di bawah supaya rujukan endpoint ikut ter-version control.
 *.md
 
-# Runtime debris dari menjalankan server di dalam cmd/
-backend/cmd/uploads/
+# Dokumentasi resmi. Pola di dalam docs/ perlu ditulis eksplisit: git tidak
+# masuk ke direktori yang sudah di-ignore, jadi `!docs/` saja tidak cukup.
+!README.md
+!docs/
+!docs/*.md
 
 # OS / IDE / deploy tools
 .DS_Store
@@ -39,6 +44,6 @@ Thumbs.db
 .vercel/
 .wrangler/
 
-# Go binaries (tanpa ekstensi)
+# Go binaries tanpa ekstensi (detail di backend/.gitignore)
 backend/server
 backend/videoplatform

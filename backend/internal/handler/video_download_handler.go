@@ -9,122 +9,145 @@ import (
 	"strings"
 	"time"
 
-	"pgarcv/internal/repository"
-	"pgarcv/pkg/response"
+	"pgarcv/internal/model"
+	"pgarcv/internal/response"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
+// downloadProxyTimeout membatasi durasi pengambilan file dari origin eksternal.
+const downloadProxyTimeout = 30 * time.Second
+
+// VideoDownloadHandler menyajikan file video untuk diunduh.
 type VideoDownloadHandler struct {
 	db         *gorm.DB
 	uploadPath string
 }
 
+// NewVideoDownloadHandler membuat VideoDownloadHandler.
 func NewVideoDownloadHandler(db *gorm.DB, uploadPath string) *VideoDownloadHandler {
 	return &VideoDownloadHandler{db: db, uploadPath: uploadPath}
 }
 
-type videoDownloadRequest struct {
-	VideoURL string `json:"-"`
-}
-
+// Download streamed video sebagai attachment.
+//
+// Endpoint ini publik, jadi urutan penjagaannya penting: video harus published
+// dan harus mengizinkan unduhan sebelum sumber file disentuh.
 func (h *VideoDownloadHandler) Download(c *gin.Context) {
-	var video repository.Video
+	var video model.Video
 	if err := h.db.First(&video, c.Param("id")).Error; err != nil {
-		response.Error(c, 404, "Video tidak ditemukan")
+		response.Error(c, http.StatusNotFound, "Video tidak ditemukan")
 		return
 	}
 
-	// Public guard
+	// Sembunyikan keberadaan video draft di depan pengguna publik.
 	if !video.IsPublished {
-		response.Error(c, 404, "Video tidak ditemukan")
+		response.Error(c, http.StatusNotFound, "Video tidak ditemukan")
 		return
 	}
 	if !video.AllowDownload {
-		response.Error(c, 403, "Video tidak bisa diunduh")
+		response.Error(c, http.StatusForbidden, "Video tidak bisa diunduh")
 		return
 	}
-
 	if video.VideoURL == "" {
-		response.Error(c, 404, "Video file tidak tersedia")
+		response.Error(c, http.StatusNotFound, "Video file tidak tersedia")
 		return
 	}
 
-	srcURL := video.VideoURL
-	// HLS video — cek raw_video_path dulu
-	if strings.HasPrefix(srcURL, "/api/hls/") {
-		if video.RawVideoPath != "" {
-			if _, err := os.Stat(video.RawVideoPath); err == nil {
-				downloadName := sanitizeFilename(video.Title) + ".mp4"
-				c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, downloadName))
-				c.Header("Content-Type", "video/mp4")
-				c.File(video.RawVideoPath)
-				return
-			}
-		}
-		response.Error(c, 403, "Video streaming tidak dapat diunduh langsung")
-		return
+	switch {
+	case strings.HasPrefix(video.VideoURL, "/api/hls/"):
+		h.downloadRaw(c, &video)
+	case strings.HasPrefix(video.VideoURL, "/uploads/"):
+		h.downloadLocal(c, &video)
+	case strings.HasPrefix(video.VideoURL, "http://"), strings.HasPrefix(video.VideoURL, "https://"):
+		h.downloadRemote(c, &video)
+	default:
+		response.Error(c, http.StatusBadRequest, "URL video tidak valid")
 	}
-
-	// Local file: /uploads/<filename>
-	if strings.HasPrefix(srcURL, "/uploads/") {
-		filename := strings.TrimPrefix(srcURL, "/uploads/")
-		filePath := filepath.Join(h.uploadPath, filename)
-		f, err := os.Open(filePath)
-		if err != nil {
-			response.Error(c, 404, "File video tidak ditemukan")
-			return
-		}
-		defer f.Close()
-
-		// Basic headers
-		c.Header("Content-Type", "application/octet-stream")
-		c.Header("Content-Disposition", "attachment; filename="+filepath.Base(filename))
-		c.Status(http.StatusOK)
-		_, _ = io.Copy(c.Writer, f)
-		return
-	}
-
-	// Absolute URL: proxy stream
-	if strings.HasPrefix(srcURL, "http://") || strings.HasPrefix(srcURL, "https://") {
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Get(srcURL)
-		if err != nil {
-			response.Error(c, 500, "Gagal mengunduh video")
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			response.Error(c, resp.StatusCode, "Gagal mengunduh video")
-			return
-		}
-
-		ct := resp.Header.Get("Content-Type")
-		if ct == "" {
-			ct = "application/octet-stream"
-		}
-		c.Header("Content-Type", ct)
-		c.Header("Content-Disposition", "attachment")
-		c.Status(http.StatusOK)
-		_, _ = io.Copy(c.Writer, resp.Body)
-		return
-	}
-
-	response.Error(c, 400, "URL video tidak valid")
 }
 
+// downloadRaw melayani video yang diputar lewat HLS memakai file sumber asli.
+func (h *VideoDownloadHandler) downloadRaw(c *gin.Context, video *model.Video) {
+	if video.RawVideoPath == "" {
+		response.Error(c, http.StatusForbidden, "Video streaming tidak dapat diunduh langsung")
+		return
+	}
+	if _, err := os.Stat(video.RawVideoPath); err != nil {
+		response.Error(c, http.StatusForbidden, "Video streaming tidak dapat diunduh langsung")
+		return
+	}
+
+	c.Header("Content-Type", "video/mp4")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(video.Title)+".mp4"))
+	c.File(video.RawVideoPath)
+}
+
+// downloadLocal melayani file yang tersimpan di direktori uploads.
+func (h *VideoDownloadHandler) downloadLocal(c *gin.Context, video *model.Video) {
+	filename := strings.TrimPrefix(video.VideoURL, "/uploads/")
+
+	// Guard traversal. Video.URL dikelola admin, tapi tetap tidak boleh
+	// diizinkan keluar dari uploadPath hanya karena nilainya string bebas.
+	if filename == "" || strings.Contains(filename, "/") || strings.Contains(filename, `\`) ||
+		strings.HasPrefix(filename, ".") || filepath.Base(filename) != filename {
+		response.Error(c, http.StatusBadRequest, "URL video tidak valid")
+		return
+	}
+
+	filePath := filepath.Join(h.uploadPath, filename)
+	f, err := os.Open(filePath)
+	if err != nil {
+		response.Error(c, http.StatusNotFound, "File video tidak ditemukan")
+		return
+	}
+	defer f.Close()
+
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Status(http.StatusOK)
+	_, _ = io.Copy(c.Writer, f)
+}
+
+// downloadRelay meneruskan file dari origin eksternal sebagai attachment.
+func (h *VideoDownloadHandler) downloadRemote(c *gin.Context, video *model.Video) {
+	client := &http.Client{Timeout: downloadProxyTimeout}
+	resp, err := client.Get(video.VideoURL)
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, "Gagal mengunduh video")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		response.Error(c, http.StatusBadGateway, "Gagal mengunduh video")
+		return
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "attachment")
+	c.Status(http.StatusOK)
+	_, _ = io.Copy(c.Writer, resp.Body)
+}
+
+// sanitizeFilename membuat nama file aman dari judul video: hanya alphanumeric,
+// spasi, tanda hubung, dan underscore yang dipertahankan.
 func sanitizeFilename(name string) string {
-	result := ""
+	var b strings.Builder
 	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == ' ' {
-			result += string(r)
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == ' ':
+			b.WriteRune(r)
 		}
 	}
-	if result == "" {
+	if b.Len() == 0 {
 		return "video"
 	}
-	return result
+	return b.String()
 }

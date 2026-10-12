@@ -2,128 +2,147 @@ package handler
 
 import (
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"pgarcv/pkg/response"
-	"pgarcv/pkg/storage"
+	"pgarcv/internal/hls"
+	"pgarcv/internal/response"
+	"pgarcv/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
+// UploadHandler menerima file umum (gambar atau video) untuk thumbnail dan aset
+// yang tidak melalui pipeline HLS.
 type UploadHandler struct {
 	uploadPath string
 	cloudinary *storage.CloudinaryStorage
+	processor  *hls.Processor
 }
 
-func NewUploadHandler(uploadPath string, cloudinary *storage.CloudinaryStorage) *UploadHandler {
-	return &UploadHandler{uploadPath: uploadPath, cloudinary: cloudinary}
+// NewUploadHandler membuat UploadHandler.
+//
+// processor dipakai untuk membuat thumbnail video; boleh nil bila seluruh
+// upload ditangani Cloudinary.
+func NewUploadHandler(uploadPath string, cloudinary *storage.CloudinaryStorage, processor *hls.Processor) *UploadHandler {
+	return &UploadHandler{uploadPath: uploadPath, cloudinary: cloudinary, processor: processor}
 }
 
+// Upload menyimpan satu file dan mengembalikan URL publiknya.
+//
+// Penyimpanan lokal memakai nama acak (UUID) supaya nama asli dari klien tidak
+// pernah menyentuh path filesystem.
 func (h *UploadHandler) Upload(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		response.Error(c, 400, "File tidak ditemukan")
+		response.Error(c, http.StatusBadRequest, "File tidak ditemukan")
 		return
 	}
 	if file.Size == 0 {
-		response.Error(c, 400, "File kosong")
+		response.Error(c, http.StatusBadRequest, "File kosong")
 		return
 	}
 
-	// Validasi ekstensi
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	kind, allowed := allowedUploadKind(ext)
 	if !allowed {
-		response.Error(c, 400, "Format file tidak didukung")
+		response.Error(c, http.StatusBadRequest, "Format file tidak didukung")
+		return
+	}
+	if file.Size > maxUploadBytes {
+		response.Error(c, http.StatusBadRequest, "File terlalu besar (maks 500MB)")
 		return
 	}
 
-	// Batasi ukuran
-	if file.Size > 500*1024*1024 { // 500MB
-		response.Error(c, 400, "File terlalu besar (maks 500MB)")
-		return
-	}
-
-	src, err := file.Open()
+	// Ekstensi hanya dicek, bukan dipercaya: isi file harus cocok dengannya.
+	// FileHeader.Open() membuka ulang file dari penyimpanan sementara Gin.
+	f, err := file.Open()
 	if err != nil {
-		response.Error(c, 400, "File tidak bisa dibaca")
+		response.Error(c, http.StatusBadRequest, "File tidak bisa dibaca")
 		return
 	}
-	defer src.Close()
-
 	header := make([]byte, 512)
-	n, _ := src.Read(header)
-	contentType := http.DetectContentType(header[:n])
-	if !validUploadContentType(kind, contentType) {
-		response.Error(c, 400, "Tipe konten file tidak sesuai")
+	n, _ := f.Read(header)
+	f.Close()
+	if !validUploadContentType(kind, http.DetectContentType(header[:n])) {
+		response.Error(c, http.StatusBadRequest, "Tipe konten file tidak sesuai")
 		return
 	}
 
-	var url string
-	filename := file.Filename
-	var dst string
-
-	// Kalau ada Cloudinary, upload ke sana
 	if h.cloudinary != nil {
-		f, err := file.Open()
-		if err != nil {
-			response.Error(c, 500, "Gagal membuka file")
-			return
-		}
-		defer f.Close()
-
-		cloudUrl, err := h.cloudinary.Upload(f, file.Filename)
-		if err != nil {
-			response.Error(c, 500, "Gagal upload: "+err.Error())
-			return
-		}
-		url = cloudUrl
-	} else {
-		// Fallback: simpan lokal
-		filename = uuid.New().String() + filepath.Ext(file.Filename)
-		dst = filepath.Join(h.uploadPath, filename)
-		if err := c.SaveUploadedFile(file, dst); err != nil {
-			response.Error(c, 500, "Gagal menyimpan file")
-			return
-		}
-		url = fmt.Sprintf("/uploads/%s", filename)
+		h.uploadToCloudinary(c, file)
+		return
 	}
-
-	// Auto thumbnail for video upload (best-effort, hanya untuk lokal upload).
-	thumbURL := ""
-	if kind == "video" && h.cloudinary == nil && dst != "" {
-		base := strings.TrimSuffix(filename, ext)
-		thumbName := base + ".jpg"
-		thumbPath := filepath.Join(h.uploadPath, thumbName)
-		if genThumb(dst, thumbPath) == nil {
-			if _, err := os.Stat(thumbPath); err == nil {
-				thumbURL = fmt.Sprintf("/uploads/%s", thumbName)
-			}
-		}
-	}
-
-	response.OK(c, gin.H{"url": url, "filename": filename, "thumbnail_url": thumbURL})
+	h.uploadToDisk(c, file, ext, kind)
 }
 
-func genThumb(videoPath, outputPath string) error {
-	// 1) try 3s
-	cmd := exec.Command("ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", "00:00:03", "-i", videoPath, "-frames:v", "1", "-q:v", "2", outputPath)
-	if err := cmd.Run(); err == nil {
-		return nil
+// uploadToCloudinary meneruskan file ke Cloudinary dan mengembalikan URL-nya.
+func (h *UploadHandler) uploadToCloudinary(c *gin.Context, file *multipart.FileHeader) {
+	f, err := file.Open()
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal membuka file")
+		return
 	}
-	// 2) fallback 1s
-	cmd2 := exec.Command("ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", "00:00:01", "-i", videoPath, "-frames:v", "1", "-q:v", "2", outputPath)
-	if err := cmd2.Run(); err == nil {
-		return nil
+	defer f.Close()
+
+	url, err := h.cloudinary.Upload(f, file.Filename)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal upload: "+err.Error())
+		return
 	}
-	return cmd2.Err
+
+	response.OK(c, gin.H{
+		"url":           url,
+		"filename":      file.Filename,
+		"thumbnail_url": "",
+	})
 }
 
+// uploadToDisk menyimpan file di direktori uploads lokal dan, untuk video,
+// menghasilkan thumbnail tambahan secara best-effort.
+func (h *UploadHandler) uploadToDisk(c *gin.Context, file *multipart.FileHeader, ext, kind string) {
+	filename := uuid.New().String() + ext
+	dst := filepath.Join(h.uploadPath, filename)
+	if err := c.SaveUploadedFile(file, dst); err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal menyimpan file")
+		return
+	}
+
+	response.OK(c, gin.H{
+		"url":           fmt.Sprintf("/uploads/%s", filename),
+		"filename":      filename,
+		"thumbnail_url": h.generateThumbnail(kind, dst),
+	})
+}
+
+// generateThumbnail membuat thumbnail untuk file video lokal.
+//
+// Thumbnail bersifat opsional: kegagalan tidak menggagalkan upload.
+func (h *UploadHandler) generateThumbnail(kind, videoPath string) string {
+	if kind != "video" || h.processor == nil {
+		return ""
+	}
+
+	for _, second := range []int{3, 1} {
+		thumbPath, err := h.processor.ExtractThumbnail(videoPath, second)
+		if err != nil {
+			continue
+		}
+		thumbName := uuid.New().String() + ".jpg"
+		thumbDst := filepath.Join(h.uploadPath, thumbName)
+		if err := os.Rename(thumbPath, thumbDst); err != nil {
+			continue
+		}
+		return fmt.Sprintf("/uploads/%s", thumbName)
+	}
+	return ""
+}
+
+// allowedUploadKind memetakan ekstensi ke jenis file yang diizinkan.
 func allowedUploadKind(ext string) (string, bool) {
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".gif":
@@ -135,6 +154,8 @@ func allowedUploadKind(ext string) (string, bool) {
 	}
 }
 
+// validUploadContentType memastikan tipe konten terdeteksi sesuai jenis file
+// yang diklaim oleh ekstensinya.
 func validUploadContentType(kind, contentType string) bool {
 	if kind == "image" {
 		return strings.HasPrefix(contentType, "image/")

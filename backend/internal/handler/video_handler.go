@@ -2,129 +2,183 @@ package handler
 
 import (
 	"log"
-	"strconv"
 	"strings"
 
-	"pgarcv/internal/repository"
-	"pgarcv/pkg/response"
+	"pgarcv/internal/model"
+	"pgarcv/internal/response"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
+// pageSizeDefault dan pageSizeMax membatasi ukuran halaman daftar video publik.
+const (
+	pageSizeDefault = 12
+	pageSizeMax     = 50
+)
+
+// VideoHandler melayani endpoint video: listing publik, featured, dan CRUD admin.
 type VideoHandler struct{ db *gorm.DB }
 
-type videoRequest struct {
-	Title         *string   `json:"title"`
-	Subtitle      *string   `json:"subtitle"`
-	Description   *string   `json:"description"`
-	ThumbnailURL  *string   `json:"thumbnail_url"`
-	VideoURL      *string   `json:"video_url"`
-	PreviewURL    *string   `json:"preview_url"`
-	Duration      *int      `json:"duration"`
-	Category      *string   `json:"category"`
-	Genre         *string   `json:"genre"`
-	Categories    *[]string `json:"categories"`
-	Genres        *[]string `json:"genres"`
-	IsPublished   *bool     `json:"is_published"`
-	AllowDownload *bool     `json:"allow_download"`
-}
-
+// NewVideoHandler membuat VideoHandler.
 func NewVideoHandler(db *gorm.DB) *VideoHandler { return &VideoHandler{db: db} }
 
+// List mengembalikan daftar video yang published dengan filter dan paginasi.
+//
+// Filter genre/category memakai JOIN ke tabel pivot karena Video menyimpan
+// relasi many2many; kolom Category/Genre yang legacy tidak dipakai sebagai
+// sumber kebenaran.
 func (h *VideoHandler) List(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "12"))
-	search := c.Query("search")
-	genre := strings.TrimSpace(c.Query("genre"))
-	category := strings.TrimSpace(c.Query("category"))
+	page := queryInt(c, "page", 1)
+	limit := queryInt(c, "limit", pageSizeDefault)
 	if page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 50 {
-		limit = 12
+	if limit < 1 || limit > pageSizeMax {
+		limit = pageSizeDefault
 	}
-	offset := (page - 1) * limit
 
-	var videos []repository.Video
-	var total int64
-	q := h.db.Model(&repository.Video{}).Where("is_published = ?", true)
+	search := strings.TrimSpace(c.Query("search"))
+	genre := strings.TrimSpace(c.Query("genre"))
+	category := strings.TrimSpace(c.Query("category"))
+
+	base := h.db.Model(&model.Video{}).Where("is_published = ?", true)
+
 	if search != "" {
-		q = q.Where(
+		like := "%" + search + "%"
+		base = base.Where(
 			"title LIKE ? OR subtitle LIKE ? OR category LIKE ? OR genre LIKE ?",
-			"%"+search+"%",
-			"%"+search+"%",
-			"%"+search+"%",
-			"%"+search+"%",
+			like, like, like, like,
 		)
 	}
 	if genre != "" {
-		q = q.Joins("JOIN video_genres ON video_genres.video_id = videos.id").
+		base = base.
+			Joins("JOIN video_genres ON video_genres.video_id = videos.id").
 			Joins("JOIN genres ON genres.id = video_genres.genre_id").
 			Where("genres.name = ?", genre)
 	}
 	if category != "" {
-		q = q.Joins("JOIN video_categories ON video_categories.video_id = videos.id").
+		base = base.
+			Joins("JOIN video_categories ON video_categories.video_id = videos.id").
 			Joins("JOIN categories ON categories.id = video_categories.category_id").
 			Where("categories.name = ?", category)
 	}
-	q.Count(&total)
-	q = q.Distinct()
-	q.Preload("Categories").Preload("Genres").Order("created_at DESC").Offset(offset).Limit(limit).Find(&videos)
+
+	// Count harus memakai sesi terpisah: GORM menyimpan state query pada
+	// statement yang sama, sehingga Count lalu Find pada objek yang sama bisa
+	// saling menimpa kondisinya.
+	var total int64
+	if err := base.Distinct().Session(&gorm.Session{}).Count(&total).Error; err != nil {
+		response.Error(c, 500, "Gagal menghitung video")
+		return
+	}
+
+	var videos []model.Video
+	err := base.Distinct().
+		Preload("Categories").Preload("Genres").
+		Order("videos.created_at DESC").
+		Offset((page - 1) * limit).Limit(limit).
+		Find(&videos).Error
+	if err != nil {
+		response.Error(c, 500, "Gagal memuat video")
+		return
+	}
+
 	response.Paginated(c, videos, total, page, limit)
 }
 
+// Get mengembalikan detail satu video yang published sambil menaikkan penghitung
+// tayangan.
 func (h *VideoHandler) Get(c *gin.Context) {
-	var video repository.Video
-	if err := h.db.Preload("Categories").Preload("Genres").Where("is_published = ?", true).First(&video, c.Param("id")).Error; err != nil {
+	var video model.Video
+	err := h.db.Preload("Categories").Preload("Genres").
+		Where("is_published = ?", true).
+		First(&video, c.Param("id")).Error
+	if err != nil {
 		response.Error(c, 404, "Video tidak ditemukan")
 		return
 	}
-	h.db.Model(&video).UpdateColumn("views", gorm.Expr("views + ?", 1))
-	video.Views++
+
+	if err := h.db.Model(&video).UpdateColumn("views", gorm.Expr("views + ?", 1)).Error; err != nil {
+		// Penghitung tayangan bersifat kosmetik: kegagalan tidak boleh
+		// membatalkan response.
+		log.Printf("[video.get] gagal menambah views id=%s: %v", c.Param("id"), err)
+	} else {
+		video.Views++
+	}
+
 	response.OK(c, video)
 }
 
+// Featured mengembalikan video published yang paling banyak ditonton.
 func (h *VideoHandler) Featured(c *gin.Context) {
-	var videos []repository.Video
-	h.db.Preload("Categories").Preload("Genres").Where("is_published = ?", true).Order("views DESC").Limit(6).Find(&videos)
+	var videos []model.Video
+	err := h.db.Preload("Categories").Preload("Genres").
+		Where("is_published = ?", true).
+		Order("views DESC").Limit(6).
+		Find(&videos).Error
+	if err != nil {
+		response.Error(c, 500, "Gagal memuat video unggulan")
+		return
+	}
 	response.OK(c, videos)
 }
 
+// AdminList mengembalikan seluruh video termasuk yang draft.
+//
+// Endpoint ini sengaja tidak dipaginasi: panel admin membutuhkan daftar penuh
+// agar bisa difilter di sisi klien. Batas keras jumlah baris mencegah response
+// membengkak tanpa batas.
 func (h *VideoHandler) AdminList(c *gin.Context) {
-	var videos []repository.Video
-	var total int64
-	h.db.Model(&repository.Video{}).Count(&total)
-	h.db.Preload("Categories").Preload("Genres").Order("created_at DESC").Find(&videos)
-	// limit fixed for admin list: since we always fetch without pagination,
-	// use len(videos) so response's limit matches the returned items.
-	response.Paginated(c, videos, total, 1, len(videos))
+	var videos []model.Video
+	if err := h.db.Preload("Categories").Preload("Genres").
+		Order("created_at DESC").Limit(adminListMaxRows).
+		Find(&videos).Error; err != nil {
+		response.Error(c, 500, "Gagal memuat video")
+		return
+	}
 
+	var total int64
+	if err := h.db.Model(&model.Video{}).Count(&total).Error; err != nil {
+		response.Error(c, 500, "Gagal menghitung video")
+		return
+	}
+
+	response.Paginated(c, videos, total, 1, adminListMaxRows)
 }
 
+// adminListMaxRows adalah batas keras baris untuk daftar admin.
+const adminListMaxRows = 500
+
+// AdminGet mengembalikan satu video tanpa memfilter status published.
 func (h *VideoHandler) AdminGet(c *gin.Context) {
-	var video repository.Video
-	if err := h.db.Preload("Categories").Preload("Genres").First(&video, c.Param("id")).Error; err != nil {
+	var video model.Video
+	err := h.db.Preload("Categories").Preload("Genres").First(&video, c.Param("id")).Error
+	if err != nil {
 		response.Error(c, 404, "Video tidak ditemukan")
 		return
 	}
 	response.OK(c, video)
 }
 
+// Create membuat video baru beserta taksonominya.
 func (h *VideoHandler) Create(c *gin.Context) {
 	var req videoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Error(c, 400, "Data tidak valid: "+err.Error())
 		return
 	}
-	log.Printf("[video.create] allow_download=%v categories=%v genres=%v", ptrBool(req.AllowDownload), ptrSliceLen(req.Categories), ptrSliceLen(req.Genres))
-	if req.Title == nil || *req.Title == "" {
+	if req.Title == nil || strings.TrimSpace(*req.Title) == "" {
 		response.Error(c, 400, "Judul wajib diisi")
 		return
 	}
 
-	video := repository.Video{Title: *req.Title}
+	log.Printf("[video.create] allow_download=%v categories=%v genres=%v",
+		ptrBool(req.AllowDownload), ptrSliceLen(req.Categories), ptrSliceLen(req.Genres))
+
+	video := model.Video{Title: strings.TrimSpace(*req.Title)}
 	applyVideoRequest(&video, req)
+
 	if err := h.db.Create(&video).Error; err != nil {
 		response.Error(c, 500, "Gagal menyimpan video")
 		return
@@ -133,12 +187,17 @@ func (h *VideoHandler) Create(c *gin.Context) {
 		response.Error(c, 500, "Gagal menyimpan genre/category")
 		return
 	}
-	h.db.Preload("Categories").Preload("Genres").First(&video, video.ID)
+	if err := h.db.Preload("Categories").Preload("Genres").First(&video, video.ID).Error; err != nil {
+		response.Error(c, 500, "Gagal memuat video setelah disimpan")
+		return
+	}
+
 	response.Created(c, video)
 }
 
+// Update mengubah field video yang dikirim pada request.
 func (h *VideoHandler) Update(c *gin.Context) {
-	var video repository.Video
+	var video model.Video
 	if err := h.db.First(&video, c.Param("id")).Error; err != nil {
 		response.Error(c, 404, "Video tidak ditemukan")
 		return
@@ -149,7 +208,18 @@ func (h *VideoHandler) Update(c *gin.Context) {
 		response.Error(c, 400, "Data tidak valid")
 		return
 	}
-	log.Printf("[video.update] id=%s allow_download=%v categories=%v genres=%v", c.Param("id"), ptrBool(req.AllowDownload), ptrSliceLen(req.Categories), ptrSliceLen(req.Genres))
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		if trimmed == "" {
+			response.Error(c, 400, "Judul tidak boleh kosong")
+			return
+		}
+		req.Title = &trimmed
+	}
+
+	log.Printf("[video.update] id=%s allow_download=%v categories=%v genres=%v",
+		c.Param("id"), ptrBool(req.AllowDownload), ptrSliceLen(req.Categories), ptrSliceLen(req.Genres))
+
 	applyVideoRequest(&video, req)
 	if err := h.db.Save(&video).Error; err != nil {
 		response.Error(c, 500, "Gagal menyimpan video")
@@ -159,34 +229,17 @@ func (h *VideoHandler) Update(c *gin.Context) {
 		response.Error(c, 500, "Gagal menyimpan genre/category")
 		return
 	}
-	h.db.Preload("Categories").Preload("Genres").First(&video, video.ID)
+	if err := h.db.Preload("Categories").Preload("Genres").First(&video, video.ID).Error; err != nil {
+		response.Error(c, 500, "Gagal memuat video setelah disimpan")
+		return
+	}
+
 	response.OK(c, video)
 }
 
-func (h *VideoHandler) ListCategories(c *gin.Context) {
-	var items []repository.Category
-	q := strings.TrimSpace(c.Query("q"))
-	dbq := h.db.Model(&repository.Category{})
-	if q != "" {
-		dbq = dbq.Where("name LIKE ?", "%"+q+"%")
-	}
-	dbq.Order("name ASC").Limit(50).Find(&items)
-	response.OK(c, items)
-}
-
-func (h *VideoHandler) ListGenres(c *gin.Context) {
-	var items []repository.Genre
-	q := strings.TrimSpace(c.Query("q"))
-	dbq := h.db.Model(&repository.Genre{})
-	if q != "" {
-		dbq = dbq.Where("name LIKE ?", "%"+q+"%")
-	}
-	dbq.Order("name ASC").Limit(50).Find(&items)
-	response.OK(c, items)
-}
-
+// Delete menghapus video (soft delete lewat gorm.DeletedAt).
 func (h *VideoHandler) Delete(c *gin.Context) {
-	result := h.db.Delete(&repository.Video{}, c.Param("id"))
+	result := h.db.Delete(&model.Video{}, c.Param("id"))
 	if result.Error != nil || result.RowsAffected == 0 {
 		response.Error(c, 404, "Video tidak ditemukan")
 		return
@@ -194,131 +247,33 @@ func (h *VideoHandler) Delete(c *gin.Context) {
 	response.OK(c, gin.H{"deleted": true})
 }
 
-func applyVideoRequest(video *repository.Video, req videoRequest) {
-	if req.Title != nil {
-		video.Title = *req.Title
+// ListCategories mengembalikan daftar category untuk form admin.
+func (h *VideoHandler) ListCategories(c *gin.Context) {
+	var items []model.Category
+	q := h.db.Model(&model.Category{})
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		q = q.Where("name LIKE ?", "%"+search+"%")
 	}
-	if req.Subtitle != nil {
-		video.Subtitle = *req.Subtitle
+	if err := q.Order("name ASC").Limit(taxonomyListMaxRows).Find(&items).Error; err != nil {
+		response.Error(c, 500, "Gagal memuat category")
+		return
 	}
-	if req.Description != nil {
-		video.Description = *req.Description
-	}
-	if req.ThumbnailURL != nil {
-		video.ThumbnailURL = *req.ThumbnailURL
-	}
-	if req.VideoURL != nil {
-		video.VideoURL = *req.VideoURL
-	}
-	if req.PreviewURL != nil {
-		video.PreviewURL = *req.PreviewURL
-	}
-	if req.Duration != nil {
-		video.Duration = *req.Duration
-	}
-	if req.Category != nil {
-		video.Category = *req.Category
-	}
-	if req.Genre != nil {
-		video.Genre = *req.Genre
-	}
-	if req.IsPublished != nil {
-		video.IsPublished = *req.IsPublished
-	}
-	if req.AllowDownload != nil {
-		video.AllowDownload = *req.AllowDownload
-	}
+	response.OK(c, items)
 }
 
-func normalizeName(s string) string {
-	s = strings.TrimSpace(s)
-	// collapse multiple spaces
-	s = strings.Join(strings.Fields(s), " ")
-	return s
+// ListGenres mengembalikan daftar genre untuk form admin.
+func (h *VideoHandler) ListGenres(c *gin.Context) {
+	var items []model.Genre
+	q := h.db.Model(&model.Genre{})
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		q = q.Where("name LIKE ?", "%"+search+"%")
+	}
+	if err := q.Order("name ASC").Limit(taxonomyListMaxRows).Find(&items).Error; err != nil {
+		response.Error(c, 500, "Gagal memuat genre")
+		return
+	}
+	response.OK(c, items)
 }
 
-func ptrBool(b *bool) any {
-	if b == nil {
-		return nil
-	}
-	return *b
-}
-func ptrSliceLen(s *[]string) any {
-	if s == nil {
-		return nil
-	}
-	return len(*s)
-}
-
-func (h *VideoHandler) applyTaxonomy(video *repository.Video, req videoRequest) error {
-	if req.Categories == nil && req.Genres == nil {
-		return nil
-	}
-
-	if req.Categories != nil {
-		var cats []repository.Category
-		for _, raw := range *req.Categories {
-			name := normalizeName(raw)
-			if name == "" {
-				continue
-			}
-			var cat repository.Category
-			// case-insensitive lookup (SQLite)
-			if err := h.db.Where("lower(name) = lower(?)", name).First(&cat).Error; err != nil {
-				if err == gorm.ErrRecordNotFound {
-					cat = repository.Category{Name: name}
-					if err2 := h.db.Create(&cat).Error; err2 != nil {
-						return err2
-					}
-				} else {
-					return err
-				}
-			}
-			cats = append(cats, cat)
-		}
-		if err := h.db.Model(video).Association("Categories").Replace(&cats); err != nil {
-			return err
-		}
-		if len(cats) > 0 {
-			video.Category = cats[0].Name
-		} else {
-			video.Category = ""
-		}
-	}
-
-	if req.Genres != nil {
-		var gens []repository.Genre
-		for _, raw := range *req.Genres {
-			name := normalizeName(raw)
-			if name == "" {
-				continue
-			}
-			var g repository.Genre
-			if err := h.db.Where("lower(name) = lower(?)", name).First(&g).Error; err != nil {
-				if err == gorm.ErrRecordNotFound {
-					g = repository.Genre{Name: name}
-					if err2 := h.db.Create(&g).Error; err2 != nil {
-						return err2
-					}
-				} else {
-					return err
-				}
-			}
-			gens = append(gens, g)
-		}
-		if err := h.db.Model(video).Association("Genres").Replace(&gens); err != nil {
-			return err
-		}
-		if len(gens) > 0 {
-			video.Genre = gens[0].Name
-		} else {
-			video.Genre = ""
-		}
-	}
-
-	// Keep legacy fields in sync if we touched taxonomy
-	return h.db.Model(video).Updates(map[string]any{
-		"category": video.Category,
-		"genre":    video.Genre,
-	}).Error
-}
+// taxonomyListMaxRows adalah batas baris untuk daftar category/genre.
+const taxonomyListMaxRows = 50

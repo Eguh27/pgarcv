@@ -1,173 +1,144 @@
+// Command server adalah entrypoint backend pgarcv.
+//
+// Tanggung jawabnya sengaja dibatasi: memuat konfigurasi, merakit dependensi,
+// menjalankan server, dan menangani shutdown dengan rapi. Seluruh definisi
+// route ada di internal/router.
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
-	// "path/filepath"
-
-	"pgarcv/config"
+	"pgarcv/internal/config"
 	"pgarcv/internal/handler"
-	"pgarcv/internal/middleware"
+	"pgarcv/internal/hls"
 	"pgarcv/internal/repository"
-	"pgarcv/pkg/hls"
-	"pgarcv/pkg/storage"
-
-	"github.com/gin-contrib/cors"
-	"github.com/gin-gonic/gin"
+	"pgarcv/internal/router"
+	"pgarcv/internal/service"
+	"pgarcv/internal/storage"
 )
 
+// shutdownTimeout adalah lamanya server menunggu request in-flight selesai saat
+// shutdown.
+const shutdownTimeout = 15 * time.Second
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatalf("❌ Server berhenti: %v", err)
+	}
+}
+
+// run merakit dan menjalankan aplikasi. Dipisah dari main agar alur startup
+// bisa diuji tanpa memanggil os.Exit.
+func run() error {
 	cfg := config.Load()
+	log.Printf("⚙️  Konfigurasi: %s", cfg)
 
-	// Pastikan folder uploads ada
-	os.MkdirAll(cfg.UploadPath, 0755)
-	os.MkdirAll(cfg.HLSOutputPath, 0755)
+	if err := ensureRuntimeDirs(cfg); err != nil {
+		return err
+	}
 
-	// Init database
-	db := repository.InitDB(cfg.DBPath, cfg.DatabaseURL)
+	db, err := repository.New(cfg.DBPath, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
 
-	// Init HLS processor
-	hlsProcessor := hls.NewProcessor(cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL)
+	if err := repository.Seed(db); err != nil {
+		// Seed gagal tidak mematikan server: database mungkin sudah berisi data
+		// dari lingkungan sebelumnya.
+		log.Printf("⚠️  Seed data dilewati: %v", err)
+	}
 
-	// Init handlers
-	videoH := handler.NewVideoHandler(db)
-	bannerH := handler.NewBannerHandler(db)
-	adH := handler.NewAdHandler(db)
-	videoSuggestH := handler.NewVideoSuggestHandler(db)
-	videoDownloadH := handler.NewVideoDownloadHandler(db, cfg.UploadPath)
-	authH := handler.NewAuthHandler(cfg.AdminUsername, cfg.AdminPassword, cfg.JWTSecret, cfg.CookieSecure)
+	// Context ini dicancel saat menerima SIGINT/SIGTERM dan dipakai seluruh
+	// background worker sebagai sinyal berhenti.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	// Init Cloudinary (opsional, hanya kalau CLOUDINARY_URL ada)
-	var cldStorage *storage.CloudinaryStorage
-	if cfg.CloudinaryURL != "" {
-		var err error
-		cldStorage, err = storage.NewCloudinaryStorage(cfg.CloudinaryURL)
+	processor := hls.NewProcessor(cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL)
+	hlsJob := service.NewHLSJob(ctx, db, processor)
+	sessions := service.NewSessionStore()
+
+	handlers := router.Handlers{
+		Video:         handler.NewVideoHandler(db),
+		Banner:        handler.NewBannerHandler(db),
+		Ad:            handler.NewAdHandler(db),
+		VideoSuggest:  handler.NewVideoSuggestHandler(db),
+		VideoDownload: handler.NewVideoDownloadHandler(db, cfg.UploadPath),
+		Auth:          handler.NewAuthHandler(cfg.AdminUsername, cfg.AdminPassword, cfg.JWTSecret, cfg.CookieSecure),
+		Upload:        handler.NewUploadHandler(cfg.UploadPath, newCloudinary(cfg), processor),
+		UploadVideo:   handler.NewUploadVideoHandler(db, cfg.UploadPath, processor, hlsJob),
+		HLS:           handler.NewHLSHandler(db, cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL),
+		ChunkedUpload: handler.NewChunkedUploadHandler(cfg.UploadPath, sessions),
+	}
+
+	server := &http.Server{
+		Addr:              cfg.Addr(),
+		Handler:           router.New(cfg, handlers),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Worker background dihentikan lebih dulu agar tidak menulis ke database
+	// setelah server sudah tidak melayani request.
+	defer hlsJob.Shutdown()
+	defer sessions.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("🚀 Server jalan di http://localhost:%s", cfg.Port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	select {
+	case err := <-serverErr:
 		if err != nil {
-			log.Printf("⚠️ Cloudinary tidak aktif: %v", err)
-		} else {
-			log.Println("✅ Cloudinary siap")
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		log.Println("🛑 Shutdown diminta, menutup server...")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	log.Println("✅ Server berhenti dengan bersih")
+	return nil
+}
+
+// ensureRuntimeDirs membuat direktori yang dibutuhkan aplikasi saat runtime.
+func ensureRuntimeDirs(cfg *config.Config) error {
+	for _, dir := range []string{cfg.UploadPath, cfg.HLSOutputPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	uploadH := handler.NewUploadHandler(cfg.UploadPath, cldStorage)
-	uploadVideoH := handler.NewUploadVideoHandler(db, cfg.UploadPath, hlsProcessor)
-	hlsH := handler.NewHLSHandler(db, cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL)
-	chunkedUploadH := handler.NewChunkedUploadHandler(cfg.UploadPath)
-
-	// Setup Gin
-	r := gin.Default()
-	r.MaxMultipartMemory = 64 << 20
-
-	// CORS — whitelist eksplisit via CORS_ORIGIN (pisahkan dengan koma).
-	// Contoh: CORS_ORIGIN=http://localhost:3000,https://pgarcv.vercel.app
-	allowedOrigins := make(map[string]bool)
-	for _, o := range strings.Split(cfg.CORSOrigin, ",") {
-		if o = strings.TrimSpace(o); o != "" {
-			allowedOrigins[o] = true
-		}
+// newCloudinary menyiapkan client Cloudinary bila CLOUDINARY_URL diisi.
+// Storage bersifat opsional: tanpa URL, file disimpan lokal.
+func newCloudinary(cfg *config.Config) *storage.CloudinaryStorage {
+	if cfg.CloudinaryURL == "" {
+		return nil
 	}
-	if cfg.Env != "production" {
-		allowedOrigins["http://localhost:3000"] = true
-		allowedOrigins["http://localhost:8080"] = true
+	cld, err := storage.NewCloudinaryStorage(cfg.CloudinaryURL)
+	if err != nil {
+		log.Printf("⚠️  Cloudinary tidak aktif: %v", err)
+		return nil
 	}
-
-	r.Use(cors.New(cors.Config{
-		AllowOriginFunc: func(origin string) bool {
-			return allowedOrigins[origin]
-		},
-		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders: []string{
-			"Origin",
-			"Content-Type",
-			"Authorization",
-			"ngrok-skip-browser-warning",
-		},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
-
-	// Static files untuk uploads
-	r.Static("/uploads", cfg.UploadPath)
-
-	// === PUBLIC ROUTES ===
-	api := r.Group("/api")
-	{
-		// Videos
-		api.GET("/videos", videoH.List)
-		api.GET("/videos/:id", videoH.Get)
-		api.GET("/videos/featured", videoH.Featured)
-		api.GET("/videos/suggest", videoSuggestH.Suggest)
-		api.GET("/videos/:id/download", videoDownloadH.Download)
-		api.GET("/categories", videoH.ListCategories)
-		api.GET("/genres", videoH.ListGenres)
-
-		// Banners & Ads
-		api.GET("/banners", bannerH.ListActive)
-		api.GET("/ads/serve", adH.Serve)
-
-		// HLS (with optional auth for admin preview)
-		hls := api.Group("/hls")
-		hls.Use(middleware.OptionalAuth(cfg.JWTSecret))
-		{
-			hls.GET("/key/:id", hlsH.ServeKey)
-			hls.GET("/:id/index.m3u8", hlsH.ServeM3U8)
-			hls.GET("/:id/:segment", hlsH.ServeSegment)
-		}
-
-		// ✅ HLS status endpoint (for polling)
-		api.GET("/videos/:id/hls-status", uploadVideoH.GetHLSStatus)
-
-		// Auth
-		api.POST("/admin/login", authH.Login)
-		api.POST("/admin/logout", authH.Logout)
-	}
-
-	// Favicon (public, no auth required)
-	r.GET("/favicon.ico", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-
-	// === ADMIN ROUTES (protected) ===
-	admin := r.Group("/api/admin")
-	admin.Use(middleware.AuthRequired(cfg.JWTSecret))
-	{
-		// Upload (traditional single-file)
-		admin.POST("/upload", uploadH.Upload)
-		admin.POST("/upload/video", uploadVideoH.UploadVideo)
-		admin.POST("/upload/process-hls", uploadVideoH.ProcessHLS)
-
-		// ✅ Chunked upload endpoints
-		admin.POST("/upload/chunked/initiate", chunkedUploadH.InitiateChunkedUpload)
-		admin.POST("/upload/chunked/:upload_id/chunk", chunkedUploadH.UploadChunk)
-		admin.POST("/upload/chunked/:upload_id/complete", chunkedUploadH.CompleteChunkedUpload)
-		admin.GET("/upload/chunked/:upload_id/progress", chunkedUploadH.GetUploadProgress)
-		admin.DELETE("/upload/chunked/:upload_id", chunkedUploadH.AbortUpload)
-
-		// Videos CRUD
-		admin.GET("/videos", videoH.AdminList)
-		admin.GET("/videos/:id", videoH.AdminGet)
-		admin.POST("/videos", videoH.Create)
-		admin.PUT("/videos/:id", videoH.Update)
-		admin.DELETE("/videos/:id", videoH.Delete)
-
-		admin.GET("/categories", videoH.ListCategories)
-		admin.GET("/genres", videoH.ListGenres)
-
-		// Banners CRUD
-		admin.GET("/banners", bannerH.AdminList)
-		admin.POST("/banners", bannerH.Create)
-		admin.PUT("/banners/:id", bannerH.Update)
-		admin.DELETE("/banners/:id", bannerH.Delete)
-
-		// Ads CRUD
-		admin.GET("/ads", adH.AdminList)
-		admin.POST("/ads", adH.Create)
-		admin.PUT("/ads/:id", adH.Update)
-		admin.DELETE("/ads/:id", adH.Delete)
-	}
-
-	log.Printf("🚀 Server jalan di http://localhost:%s", cfg.Port)
-	r.Run(":" + cfg.Port)
+	log.Println("✅ Cloudinary siap")
+	return cld
 }
