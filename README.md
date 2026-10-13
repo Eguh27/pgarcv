@@ -91,10 +91,19 @@ cd frontend && npm run dev
 
 ### Akses dari perangkat lain di jaringan lokal
 
-Kalau membuka lewat IP LAN (mis. `http://192.168.1.16:3000` untuk tes dari HP),
-origin tersebut **wajib** didaftarkan di `CORS_ORIGIN` pada `backend/.env`,
-dipisahkan koma. Tanpa itu browser memblokir request dan upload gagal dengan
-`NetworkError`. Restart backend setelah mengubahnya.
+Untuk tes dari HP atau perangkat lain, buka lewat IP LAN (mis.
+`http://192.168.100.78:3000`). Dua hal wajib diset dan harus **satu subnet**:
+
+| File | Nilai |
+|---|---|
+| `frontend/.env.local` | `LAN_HOST=192.168.100.78` |
+| `backend/.env` | `CORS_ORIGIN=http://localhost:3000,http://192.168.100.78:3000` |
+
+IP LAN berubah saat ganti router/hotspot. Kalau tidak sengaja diperbarui,
+**gambar tidak tampil** dan request API diblokir CORS. Restart frontend
+dan backend setelah mengubahnya.
+
+Detailnya di [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ---
 

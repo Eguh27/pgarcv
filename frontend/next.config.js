@@ -1,13 +1,34 @@
 /** @type {import('next').NextConfig} */
+
+// Host LAN (opsional). Cukup diisi SEKALI di frontend/.env.local, misal
+// LAN_HOST=192.168.100.78. Dipakai untuk:
+//   1. remotePatterns next/image
+//   2. CORS_ORIGIN di backend/.env (backend/: CORS_ORIGIN=...,${LAN_HOST}:3000)
+//
+// IP LAN sering berubah saat ganti hotspot/router. Karena itu JANGAN
+// menuliskan IP langsung di dalam file ini — cukup pindahkan nilainya ke
+// .env.local kalau addressnya berubah.
+//
+// Kosongkan (atau hapus) variabel ini kalau hanya diakses via localhost.
+const LAN_HOST = process.env.LAN_HOST || "";
+
 const nextConfig = {
+  // Next.js 16 memblokir resource dev (_next/*, HMR) yang diakses dari origin
+  // selain localhost. Tanpa ini, membuka situs via IP LAN membuat HMR dan
+  // sebagian aset ditolak → gambar tidak muncul di HP despite URL-nya valid.
+  //
+  // Dipakai juga oleh HLS dev/playground Next.js. Hanya relevan di mode
+  // development; production tidak menerapkan pembatasan ini.
+  ...(LAN_HOST ? { allowedDevOrigins: [LAN_HOST] } : {}),
+
   images: {
     // Next.js 16 memblokir optimasi gambar yang di-host di IP privat/localhost
     // demi keamanan (SSRF). Tanpa ini, next/image menolak URL backend lokal
     // dengan 400 '"url" parameter is not allowed' — remotePatterns sudah benar,
-    // tapi pengecekan IP privat terjadi sesudahnya.
+    // tapi pengecekan IP privat berjalan sesudahnya.
     //
-    // Aman karena backend ini hanya berjalan di jaringan privat. Hapus flag ini
-    // kalau backend sudah dipindahkan ke domain publik.
+    // Aman selama backend hanya jalan di jaringan privat. Hapus flag ini
+    // begitu backend dipindahkan ke domain publik.
     dangerouslyAllowLocalIP: true,
 
     remotePatterns: [
@@ -17,14 +38,17 @@ const nextConfig = {
         port: "8080",
         pathname: "/uploads/**",
       },
-      {
-        // IP LAN untuk akses dari perangkat lain di jaringan yang sama.
-        // hostname di bawah perlu disesuaikan dengan subnet kamu.
-        protocol: "http",
-        hostname: "192.168.1.16",
-        port: "8080",
-        pathname: "/uploads/**",
-      },
+      // Host LAN hanya ditambahkan bila LAN_HOST diisi.
+      ...(LAN_HOST
+        ? [
+            {
+              protocol: "http",
+              hostname: LAN_HOST,
+              port: "8080",
+              pathname: "/uploads/**",
+            },
+          ]
+        : []),
       {
         protocol: "https",
         hostname: "*.ngrok-free.app",
@@ -38,6 +62,7 @@ const nextConfig = {
       },
     ],
   },
+
   async rewrites() {
     // PENTING: rewrites dievaluasi saat BUILD dan hasilnya di-freeze ke
     // routes-manifest.json. Env var yang disetel saat runtime TIDAK terbaca
@@ -64,5 +89,3 @@ const nextConfig = {
 };
 
 module.exports = nextConfig;
-
-

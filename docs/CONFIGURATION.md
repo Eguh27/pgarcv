@@ -104,13 +104,39 @@ Cloudinary. Video tetap diproses lokal menjadi HLS.
 | `CORS_ORIGIN` | `http://localhost:3000` | Origin frontend yang diizinkan, dipisah koma |
 
 ```bash
-CORS_ORIGIN=http://localhost:3000,http://192.168.1.16:3000
+CORS_ORIGIN=http://localhost:3000,http://192.168.100.78:3000
 ```
 
 Di luar production, `http://localhost:3000` dan `http://localhost:8080`
 ditambahkan otomatis. **IP LAN tidak bisa ditebak** — harus ditulis manual.
 Kalau origin tidak terdaftar, preflight dibalas 403 dan browser memblokir
 request, sehingga upload gagal dengan `NetworkError`.
+
+### Akses dari perangkat lain di jaringan lokal
+
+IP LAN berubah saat ganti router atau hotspot. Kalau tidak sengaja diperbarui,
+gambar tidak tampil dan request API gagal. Dua nilai ini harus sinkron:
+
+**`frontend/.env.local`**
+```ini
+LAN_HOST=192.168.100.78
+```
+
+**`backend/.env`**
+```ini
+CORS_ORIGIN=http://localhost:3000,http://192.168.100.78:3000
+```
+
+`LAN_HOST` dibaca `next.config.js` untuk `remotePatterns` next/image.
+Kalau tidak diisi, cukup hapus baris `LAN_HOST` — `remotePatterns` LAN
+otomatis dilewati dan sisanya tetap jalan.
+
+Restart **frontend** dan **backend** setiap kali IP berubah.
+Cara cek IP LAN:
+
+```bash
+ip -4 addr show | grep -oP 'inet \K[0-9.]+' | grep -v '^127'
+```
 
 ---
 
