@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -73,7 +74,10 @@ func run() error {
 		Auth:          handler.NewAuthHandler(cfg.AdminUsername, cfg.AdminPassword, cfg.JWTSecret, cfg.CookieSecure),
 		Upload:        handler.NewUploadHandler(cfg.UploadPath, newCloudinary(cfg), processor),
 		UploadVideo:   handler.NewUploadVideoHandler(db, cfg.UploadPath, processor, hlsJob),
-		HLS:           handler.NewHLSHandler(db, cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL),
+		HLS: handler.NewHLSHandler(
+			db, cfg.HLSOutputPath, cfg.HLSEncryptKey, cfg.ServerURL,
+			strings.Split(cfg.CORSOrigin, ",")...,
+		),
 		ChunkedUpload: handler.NewChunkedUploadHandler(cfg.UploadPath, sessions),
 	}
 

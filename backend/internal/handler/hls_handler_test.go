@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"pgarcv/internal/middleware"
@@ -160,6 +161,29 @@ func TestServeKey(t *testing.T) {
 		}
 	})
 
+	t.Run("referer IP LAN yang terdaftar presenting key", func(t *testing.T) {
+		// Origin LAN harus diterima: hanya SERVER_URL + localhost yang
+		// membuat video tidak bisa diputar dari HP.
+		lan := NewHLSHandler(db, t.TempDir(), testHexKey, "http://localhost:8080",
+			"http://localhost:3000,http://192.168.100.78:3000")
+		r := gin.New()
+		r.GET("/api/hls/key/:id", lan.ServeKey)
+		req := httptest.NewRequest(http.MethodGet, "/api/hls/key/1", nil)
+		req.Header.Set("Referer", "http://192.168.100.78:3000/watch/1")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("got %d want 200 untuk origin LAN terdaftar", w.Code)
+		}
+	})
+
+	t.Run("origin LAN tidak terdaftar tetap ditolak", func(t *testing.T) {
+		w := serveKeyRequest("http://10.0.0.9:3000/watch", "1")
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("got %d want 403", w.Code)
+		}
+	})
+
 	t.Run("referer server sendiri menyajikan key", func(t *testing.T) {
 		w := serveKeyRequest("http://localhost:8080/watch/1", "1")
 		if w.Code != http.StatusOK {
@@ -283,4 +307,48 @@ func TestSanitizeFilename(t *testing.T) {
 			t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
+}
+
+// --- relativizeKeyURI ---
+
+func TestRelativizeKeyURI(t *testing.T) {
+	t.Run("URI absolut diganti path relatif", func(t *testing.T) {
+		in := []byte("#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"http://localhost:8080/api/hls/key/4\",IV=0x00\n" +
+			"#EXTINF:10.0,\nseg_000.ts\n")
+		out := string(relativizeKeyURI(in, 4))
+		if !strings.Contains(out, `URI="/api/hls/key/4"`) {
+			t.Fatalf("URI belum di-rewrite: %s", out)
+		}
+		if strings.Contains(out, "localhost") {
+			t.Fatalf("masih ada host absolut: %s", out)
+		}
+	})
+
+	t.Run("METHOD dan IV tetap utuh", func(t *testing.T) {
+		in := []byte(`#EXT-X-KEY:METHOD=AES-128,URI="http://example.com/k",IV=0xDEADBEEF`)
+		out := string(relativizeKeyURI(in, 7))
+		if !strings.Contains(out, "METHOD=AES-128") || !strings.Contains(out, "IV=0xDEADBEEF") {
+			t.Fatalf("atribut lain ikut berubah: %s", out)
+		}
+	})
+
+	t.Run("manifest tanpa EXT-X-KEY tidak diubah", func(t *testing.T) {
+		in := []byte("#EXTM3U\n#EXTINF:10.0,\nseg_000.ts\n")
+		if string(relativizeKeyURI(in, 1)) != string(in) {
+			t.Fatal("manifest tanpa key ikut berubah")
+		}
+	})
+
+	t.Run("semua key di-multi-variant di-rewrite", func(t *testing.T) {
+		in := []byte(`#EXT-X-KEY:METHOD=AES-128,URI="http://a/k1"` + "\n" +
+			`#EXT-X-KEY:METHOD=AES-128,URI="http://a/k2"`)
+		out := string(relativizeKeyURI(in, 9))
+		if strings.Contains(out, "http://") {
+			t.Fatalf("masih ada URI absolut: %s", out)
+		}
+		if strings.Count(out, `URI="/api/hls/key/9"`) != 2 {
+			t.Fatalf("harus dua key ter-rewrite: %s", out)
+		}
+	})
 }

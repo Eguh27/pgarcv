@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -23,11 +25,35 @@ type HLSHandler struct {
 	outputBase string
 	encryptKey string
 	serverURL  string
+	// allowedOrigins adalah awalan origin yang boleh meminta kunci enkripsi.
+	allowedOrigins []string
 }
 
 // NewHLSHandler membuat HLSHandler.
-func NewHLSHandler(db *gorm.DB, outputBase, encryptKey, serverURL string) *HLSHandler {
-	return &HLSHandler{db: db, outputBase: outputBase, encryptKey: encryptKey, serverURL: serverURL}
+//
+// allowedOrigins boleh berisi beberapa origin sekaligus dipisah koma (format
+// CORS_ORIGIN) maupun sebagai argumen terpisah.
+func NewHLSHandler(db *gorm.DB, outputBase, encryptKey, serverURL string, allowedOrigins ...string) *HLSHandler {
+	prefixes := make([]string, 0, len(allowedOrigins)+4)
+	// Localhost selalu aman untuk pengembangan dan tidak posesif.
+	prefixes = append(prefixes, "http://localhost", "https://localhost")
+	if serverURL != "" {
+		prefixes = append(prefixes, serverURL)
+	}
+	for _, raw := range allowedOrigins {
+		for _, o := range strings.Split(raw, ",") {
+			if o = strings.TrimSpace(o); o != "" {
+				prefixes = append(prefixes, o)
+			}
+		}
+	}
+	return &HLSHandler{
+		db:             db,
+		outputBase:     outputBase,
+		encryptKey:     encryptKey,
+		serverURL:      serverURL,
+		allowedOrigins: prefixes,
+	}
 }
 
 // videoDir adalah direktori output HLS untuk satu video.
@@ -79,15 +105,25 @@ func (h *HLSHandler) authorize(c *gin.Context) (*model.Video, bool) {
 	return video, true
 }
 
-// allowedOrigin melapor apakah referer atau origin request berasal dari server
-// sendiri atau dari localhost.
+// allowedOrigin melapor apakah referer atau origin request berasal dari
+// origin yang diizinkan.
+//
+// Daftar berasal dari CORS_ORIGIN + SERVER_URL + localhost. Hanya menerima
+// SERVER_URL membuat halaman yang diakses lewat IP LAN selalu ditolak, padahal
+// pemutar di perangkat itu播放 video dengan sah.
+//
+// Perlu diingat: header Referer bisa dipalsukan dan kadang tidak dikirim, jadi
+// ini lapisan tambahan, bukan kontrol akses utama. Kontrol sesungguhnya ada di
+// authorize() — key hanya untuk video published, atau admin yang login.
 func (h *HLSHandler) allowedOrigin(referer, origin string) bool {
 	for _, candidate := range []string{referer, origin} {
 		if candidate == "" {
 			continue
 		}
-		if strings.HasPrefix(candidate, h.serverURL) || strings.HasPrefix(candidate, "http://localhost") {
-			return true
+		for _, prefix := range h.allowedOrigins {
+			if prefix != "" && strings.HasPrefix(candidate, prefix) {
+				return true
+			}
 		}
 	}
 	return false
@@ -135,7 +171,31 @@ func (h *HLSHandler) ServeM3U8(c *gin.Context) {
 	// eksplisit di sini memang yang dipakai klien.
 	c.Header("Content-Type", "application/vnd.apple.mpegurl")
 	c.Header("Cache-Control", "no-cache")
-	c.File(m3u8Path)
+
+	raw, err := os.ReadFile(m3u8Path)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal membaca playlist")
+		return
+	}
+	// Key URI ditulis ffmpeg sebagai URL absolut dari SERVER_URL saat transcode.
+	// Nilai itu hanya benar untuk satu host: dibuka dari HP, "localhost"
+	// merujuk ke HP itu sendiri sehingga key tidak pernah ditemukan dan video
+	// tidak bisa diputar. Disajikan ulang sebagai path relatif supaya browser
+	// me-resolve-nya terhadap origin yang sedang dipakai (localhost, IP LAN,
+	// atau domain publik).
+	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", relativizeKeyURI(raw, videoID))
+}
+
+// keyURIPattern menangkap nilai URI pada tag #EXT-X-KEY.
+var keyURIPattern = regexp.MustCompile(`URI="([^"]*)"`)
+
+// relativizeKeyURI mengganti URI absolut pada #EXT-X-KEY menjadi path relatif
+// ke endpoint key. Atribut lain pada tag (METHOD, IV) tidak diubah.
+func relativizeKeyURI(manifest []byte, videoID uint) []byte {
+	if !bytes.Contains(manifest, []byte("#EXT-X-KEY")) {
+		return manifest
+	}
+	return keyURIPattern.ReplaceAll(manifest, []byte(`URI="/api/hls/key/`+strconv.FormatUint(uint64(videoID), 10)+`"`))
 }
 
 // ServeSegment menyajikan satu segmen HLS.
