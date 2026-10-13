@@ -1,7 +1,6 @@
 "use client";
 import { useState } from "react";
-
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+import { adminApi } from "@/lib/api";
 
 export default function AdminLoginPage() {
   const [username, setUsername] = useState("");
@@ -13,26 +12,16 @@ export default function AdminLoginPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`${BASE}/api/admin/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ username, password }),
-      });
+      // Pakai adminApi, bukan fetch manual: BASE di lib/api.ts sudah
+      // membedakan browser (path relatif) dan server (URL absolut).
+      // Versi lama memakai BASE sendiri dengan fallback http://localhost:8080
+      // sehingga di HP mengarah ke loopback HP itu sendiri → "Failed to fetch".
+      const res = await adminApi.auth.login(username, password);
+      // adminApi.auth.login sudah menyimpan token ke localStorage.
+      if (!res?.token) throw new Error("Token tidak ada di response");
 
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.message || "Login gagal");
-      }
-
-      const token = json.token || json.data?.token;
-      if (!token) throw new Error("Token tidak ada di response");
-
-      // ✅ Simpan token ke localStorage
-      localStorage.setItem("admin_token", token);
-      console.log("✅ Token saved:", localStorage.getItem("admin_token")?.slice(0, 20));
-
-      // Hard navigate — bukan router.push
+      // Hard navigate — bukan router.push, supaya cookie baru ikut
+      // dan proxy.ts membaca sesi saat render.
       window.location.href = "/admin/dashboard";
 
     } catch (err: unknown) {

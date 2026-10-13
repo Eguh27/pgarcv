@@ -7,7 +7,12 @@ import useSWR from "swr";
 import { VideoCard } from "@/components/video/VideoCard";
 import { Filter, X } from "lucide-react";
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// Semua request memakai path relatif ("/api/...") agar ditangani rewrite
+// Next.js. BASE dari lib/api.ts sengaja tidak dipakai di sini: pada browser
+// isinya kosong, sedangkan fallback lamanya "http://localhost:8080" membuat
+// halaman rusak saat dibuka dari perangkat lain (menunjuk ke loopback HP).
+const apiFetch = (path: string) =>
+  fetch(path, { headers: { "ngrok-skip-browser-warning": "true" } }).then((r) => r.json());
 
 function SkeletonCard() {
   return (
@@ -65,15 +70,11 @@ function SearchResults() {
   const [showFilters, setShowFilters] = useState(false);
 
   const { data: genresData } = useSWR("genres", () =>
-    fetch(`${BASE}/api/genres`, { headers: { "ngrok-skip-browser-warning": "true" } })
-      .then((r) => r.json())
-      .then((r) => r.data ?? [])
+    apiFetch("/api/genres").then((r) => r.data ?? [])
   );
 
   const { data: categoriesData } = useSWR("categories", () =>
-    fetch(`${BASE}/api/categories`, { headers: { "ngrok-skip-browser-warning": "true" } })
-      .then((r) => r.json())
-      .then((r) => r.data ?? [])
+    apiFetch("/api/categories").then((r) => r.data ?? [])
   );
 
   const genres: string[] = (genresData ?? []).map((g: { name: string }) => g.name);
@@ -87,9 +88,7 @@ function SearchResults() {
     if (selectedGenre) params.set("genre", selectedGenre);
     if (selectedCategory) params.set("category", selectedCategory);
 
-    return fetch(`${BASE}/api/videos?${params}`, {
-      headers: { "ngrok-skip-browser-warning": "true" },
-    }).then((r) => r.json());
+    return apiFetch(`/api/videos?${params}`);
   });
 
   const videos = data?.data ?? [];
